@@ -29,7 +29,7 @@ qna_pairs := []QnA{
 updateCqaKnowledgebase(qna_pairs)
 
 ```
-This function will update the knowledge base by making a PATCH request to the CQA endpoint..
+This function will update the knowledge base by making a PATCH request to the CQA endpoint.
 
 ---
 
