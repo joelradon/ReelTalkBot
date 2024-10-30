@@ -20,7 +20,7 @@ jobs:
 
     - name: Build Docker Image
       run: |
-        docker build -t reeltalk.azurecr.io/reeltalkfunction:latest .
+        docker build -t reeltalk.azurecr.io/fishingbotfunction:latest ./GoFishingBotFunction
 
     - name: Log in to ACR
       run: |
@@ -28,8 +28,8 @@ jobs:
 
     - name: Push Docker Image
       run: |
-        docker push reeltalk.azurecr.io/reeltalkfunction:latest
+        docker push reeltalk.azurecr.io/fishingbotfunction:latest
 
     - name: Deploy to Azure Function App
       run: |
-        az functionapp deployment source config --name "ReelTalkBot" --resource-group "ReelTalk-Go" --image "reeltalk.azurecr.io/reeltalkfunction:latest"
+        az functionapp deployment source config --name "ReelTalkBot" --resource-group "ReelTalk-Go" --image "reeltalk.azurecr.io/fishingbotfunction:latest"
