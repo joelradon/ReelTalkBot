@@ -18,18 +18,18 @@ jobs:
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Build and Push Docker Image
+    - name: Build Docker Image
       run: |
-        docker build -t <your-container-registry>.azurecr.io/gofishingbotfunction:latest .
-        echo ${{ secrets.AZURE_CREDENTIALS }} | docker login <your-container-registry>.azurecr.io -u <your-username> --password-stdin
-        docker push <your-container-registry>.azurecr.io/gofishingbotfunction:latest
+        docker build -t reeltalk.azurecr.io/gofishingbotfunction:latest .
 
-    - name: Deploy to Azure Container Instances
-      uses: azure/aci-deploy@v1
-      with:
-        resource-group: <your-resource-group>
-        dns-name-label: gofishingbot
-        image: <your-container-registry>.azurecr.io/gofishingbotfunction:latest
-        registry-username: <your-username>
-        registry-password: ${{ secrets.AZURE_PASSWORD }}
-        location: eastus
+    - name: Log in to ACR
+      run: |
+        echo ${{ secrets.AZURE_PASSWORD }} | docker login reeltalk.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
+
+    - name: Push Docker Image
+      run: |
+        docker push reeltalk.azurecr.io/gofishingbotfunction:latest
+
+    - name: Deploy to Azure Function App
+      run: |
+        az functionapp deployment source config --name "ReelTalkBot" --resource-group "ReelTalk-Go" --image "reeltalk.azurecr.io/gofishingbotfunction:latest"

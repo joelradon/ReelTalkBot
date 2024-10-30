@@ -21,20 +21,13 @@ To train the bot, you can send a command like:
 
 ```bash
 /update_kb "What is fly fishing?" "Fly fishing is an angling method that uses a light-weight lure called an artificial fly."
-```
 
-The bot will add this entry to the knowledge base, making it available for future queries.
+```go
+qna_pairs := []QnA{
+    {"question": "What is euro nymphing?", "answer": "Euro nymphing is a short-line nymphing method that uses thin leaders and weighted flies."},
+}
+updateCqaKnowledgebase(qna_pairs)
 
-### 2. Updating Knowledgebase via Code
-You can also update the knowledgebase by modifying the bot script directly:
-- Use the `update_cqa_knowledgebase` function to add new question-answer pairs.
-- Example:
-
-```python
-qna_pairs = [
-    {"question": "What is euro nymphing?", "answer": "Euro nymphing is a short-line nymphing method that uses thin leaders and weighted flies."}
-]
-update_cqa_knowledgebase(qna_pairs)
 ```
 This function will update the knowledge base by making a PATCH request to the CQA endpoint.
 
@@ -43,64 +36,59 @@ This function will update the knowledge base by making a PATCH request to the CQ
 ## Folder Structure
 ```
 /FishingBotFunction
-├── __init__.py               # Main entry point for the Azure Function
-├── requirements.txt          # Python dependencies
-├── host.json                 # Azure Functions host configuration
-├── api_requests.py           # Handles API requests to CQA and OpenAI
-├── secrets_manager.py        # Manages Key Vault interactions for secure secrets access
-├── telegram_handler.py       # Processes Telegram messages, manages context and throttling
-└── .funcignore               # Specifies files to ignore in Azure Functions deployment
+├── main.go                   # Main entry point for the Azure Function
+├── go.mod                    # Go module dependencies
+├── go.sum                    # Go module checksums
+├── api_requests.go           # Handles API requests to CQA and OpenAI
+├── secrets_manager.go        # Manages Key Vault interactions for secure secrets access
+├── telegram_handler.go       # Processes Telegram messages, manages context and throttling
+└── .gitignore                # Specifies files to ignore in Git repository
+
 ```
 ---
-
 ## File Descriptions
 
-### `__init__.py`
-The entry point for the Azure Function, responsible for receiving HTTP triggers from Telegram. This file processes incoming messages, retrieves the necessary secrets, and delegates the processing to `telegram_handler.py`.
+### `main.go`
+The entry point for the Azure Function, responsible for receiving HTTP triggers from Telegram. This file processes incoming messages, retrieves the necessary secrets, and delegates the processing to `telegram_handler.go`.
 
 - **Function**: `main`
 - **Purpose**: Responds to HTTP triggers, loads secrets, and forwards the message to the Telegram handler.
-- **Dependencies**: `secrets_manager.py`, `telegram_handler.py`
+- **Dependencies**: `secrets_manager.go`, `telegram_handler.go`
 
-### `api_requests.py`
+### `api_requests.go`
 This module handles requests to external AI services, specifically **Custom Question Answering (CQA)** and **OpenAI**. It includes rate-limiting to prevent hitting API request limits and utilizes asynchronous requests for efficient, non-blocking I/O operations.
 
 - **Functionality**:
-  - `query_cqa`: Queries Azure's Custom Question Answering service to retrieve answers based on user questions.
-  - `query_openai`: Sends a prompt to the OpenAI GPT model to generate conversational responses.
+  - `queryCQA`: Queries Azure's Custom Question Answering service to retrieve answers based on user questions.
+  - `queryOpenAI`: Sends a prompt to the OpenAI GPT model to generate conversational responses.
   - **Rate Limiting**: Uses `asyncio_throttle.Throttler` to manage the frequency of API calls.
-- **Usage**: Called from `telegram_handler.py` to get responses for user questions.
+- **Usage**: Called from `telegram_handler.go` to get responses for user questions.
 
-### `secrets_manager.py`
+### `secrets_manager.go`
 Manages interaction with **Azure Key Vault** for securely storing and retrieving sensitive information like API keys. By isolating secret management, this module keeps secrets secure and enables easy updates without changing the rest of the code.
 
 - **Functionality**:
-  - `load_secrets`: Connects to Azure Key Vault using the Function App’s Managed Identity to fetch secrets like `TELEGRAM_API_TOKEN`, `CQA_ENDPOINT`, `CQA_API_KEY`, `OPENAI_ENDPOINT`, and `OPENAI_API_KEY`.
-- **Usage**: Called in `__init__.py` to load and pass secrets securely to other modules.
+  - `loadSecrets`: Connects to Azure Key Vault using the Function App’s Managed Identity to fetch secrets like `TELEGRAM_API_TOKEN`, `CQA_ENDPOINT`, `CQA_API_KEY`, `OPENAI_ENDPOINT`, and `OPENAI_API_KEY`.
+- **Usage**: Called in `main.go` to load and pass secrets securely to other modules.
 
-### `telegram_handler.py`
+### `telegram_handler.go`
 This module handles the core processing of Telegram messages. It manages context for multi-turn conversations, applies throttling, and handles the decision-making on whether a response is warranted based on the type of message received.
 
 - **Functionality**:
-  - `handle_telegram_message`: Parses incoming messages, manages user context, throttles requests, and calls `api_requests.py` functions to generate responses.
+  - `handleTelegramMessage`: Parses incoming messages, manages user context, throttles requests, and calls `api_requests.go` functions to generate responses.
   - **Context Management**: Maintains a simple history to handle follow-up questions from users.
   - **Throttling**: Ensures rate limits are adhered to when querying external APIs.
-- **Usage**: Invoked by `__init__.py` when a new Telegram message arrives.
+- **Usage**: Invoked by `main.go` when a new Telegram message arrives.
 
-### `requirements.txt`
-Lists all Python dependencies required for the application, including Azure SDKs, `aiohttp` for asynchronous HTTP requests, `asyncio-throttle` for rate limiting, and `python-telegram-bot` for Telegram integration.
+### `go.mod` and `go.sum`
+These files manage dependencies for the Go application, ensuring all necessary packages are included during deployment.
 
 - **Usage**: Ensures the application installs all necessary packages during deployment.
 
-### `host.json`
-Contains the configuration settings for the Azure Functions host environment, such as runtime version and general settings.
+### `.gitignore`
+Defines files and directories to exclude from the Git repository, similar to a `.funcignore` file. Helps keep the repository clean by excluding unnecessary files.
 
-- **Purpose**: Configures the runtime environment for Azure Functions.
-
-### `.funcignore`
-Defines files and directories to exclude from the deployment package, similar to a `.gitignore` file. Helps keep deployment lightweight by excluding unnecessary files.
-
-- **Example Entries**: `.env`, `__pycache__`, etc.
+- **Example Entries**: `.env`, `*.exe`, etc.
 
 ---
 
