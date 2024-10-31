@@ -4,45 +4,43 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 )
 
-func QueryCQA(question, endpoint, apiKey string) (string, error) {
-	data := map[string]string{"question": question}
-	body, _ := json.Marshal(data)
-	req, _ := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
-	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
+type CQAQuery struct {
+	Question string `json:"question"`
+}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+type OpenAIQuery struct {
+	Messages    Message `json:"messages"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float32 `json:"temperature"`
+}
 
-	if resp.StatusCode == http.StatusOK {
-		var result map[string]interface{}
-		body, _ := ioutil.ReadAll(resp.Body)
-		json.Unmarshal(body, &result)
-		if answers, ok := result["answers"].([]interface{}); ok && len(answers) > 0 {
-			answer := answers[0].(map[string]interface{})
-			return answer["answer"].(string), nil
-		}
-	}
-	return "", fmt.Errorf("CQA API error: %v", resp.Status)
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 func QueryOpenAI(prompt, endpoint, apiKey string) (string, error) {
-	data := map[string]interface{}{
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens":  500,
-		"temperature": 0.7,
+	query := OpenAIQuery{
+		Messages: Message{
+			Role:    "user",
+			Content: prompt,
+		},
+		MaxTokens:   500,
+		Temperature: 0.7,
 	}
-	body, _ := json.Marshal(data)
-	req, _ := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	body, err := json.Marshal(query)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("api-key", apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -56,7 +54,7 @@ func QueryOpenAI(prompt, endpoint, apiKey string) (string, error) {
 
 		if resp.StatusCode == http.StatusOK {
 			var result map[string]interface{}
-			body, _ := ioutil.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			json.Unmarshal(body, &result)
 			if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
 				message := choices[0].(map[string]interface{})
@@ -67,4 +65,43 @@ func QueryOpenAI(prompt, endpoint, apiKey string) (string, error) {
 		}
 	}
 	return "Service unavailable due to rate limits. Please try again later.", nil
+}
+
+func QueryCQA(question, endpoint, apiKey string) (string, error) {
+	cqaQuery := CQAQuery{
+		Question: question,
+	}
+	body, err := json.Marshal(cqaQuery)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var result map[string]interface{}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", err
+		}
+
+		json.Unmarshal(body, &result)
+		if answers, ok := result["answers"].([]interface{}); ok && len(answers) > 0 {
+			answer := answers[0].(map[string]interface{})
+			return answer["answer"].(string), nil
+		}
+	}
+	return "", fmt.Errorf("CQA API error: %v", resp.Status)
 }
