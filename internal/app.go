@@ -1,10 +1,11 @@
-package main
+package internal
 
 import (
 	"fmt"
 	"os"
 )
 
+// App struct defines the core application dependencies, including secrets and endpoints
 type App struct {
 	TelegramToken  string
 	CQAKey         string
@@ -13,6 +14,7 @@ type App struct {
 	OpenAIEndpoint string
 }
 
+// NewApp initializes and returns a new App struct with required environment variables
 func NewApp() (*App, error) {
 	tt := os.Getenv("TELEGRAM_TOKEN")
 	cKey := os.Getenv("CQA_KEY")
