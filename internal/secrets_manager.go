@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"fmt"
@@ -13,6 +13,7 @@ type App struct {
 	OpenAIEndpoint string
 }
 
+// NewApp initializes and returns the App struct
 func NewApp() (*App, error) {
 	tt := os.Getenv("TELEGRAM_TOKEN")
 	cKey := os.Getenv("CQA_KEY")
