@@ -6,17 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 )
 
-type CQAQuery struct {
-	Question string `json:"question"`
-}
-
 type OpenAIQuery struct {
-	Messages    Message `json:"messages"`
-	MaxTokens   int     `json:"max_tokens"`
-	Temperature float32 `json:"temperature"`
+	Messages    []Message `json:"messages"`
+	MaxTokens   int       `json:"max_tokens"`
+	Temperature float32   `json:"temperature"`
 }
 
 type Message struct {
@@ -24,84 +20,73 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-func QueryOpenAI(prompt, endpoint, apiKey string) (string, error) {
+// QueryOpenAIWithSummarization handles querying OpenAI and ensures summarized responses.
+func QueryOpenAIWithSummarization(prompt, baseEndpoint, apiKey string) (string, error) {
+	deploymentName := "gpt-4o-mini"
+	apiVersion := "2024-08-01-preview"
+	fullEndpoint := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseEndpoint, deploymentName, apiVersion)
+
+	client := &http.Client{}
 	query := OpenAIQuery{
-		Messages: Message{
-			Role:    "user",
-			Content: prompt,
-		},
+		Messages:    []Message{{Role: "user", Content: prompt}},
 		MaxTokens:   500,
 		Temperature: 0.7,
 	}
+
 	body, err := json.Marshal(query)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to marshal OpenAI query: %w", err)
 	}
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", fullEndpoint, bytes.NewBuffer(body))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create OpenAI request: %w", err)
 	}
 	req.Header.Set("api-key", apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	for i := 0; i < 5; i++ {
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			return "", err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK {
-			var result map[string]interface{}
-			body, _ := io.ReadAll(resp.Body)
-			json.Unmarshal(body, &result)
-			if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
-				message := choices[0].(map[string]interface{})
-				return message["content"].(string), nil
-			}
-		} else if resp.StatusCode == 429 {
-			time.Sleep(time.Second * time.Duration(2<<i))
-		}
-	}
-	return "Service unavailable due to rate limits. Please try again later.", nil
-}
-
-func QueryCQA(question, endpoint, apiKey string) (string, error) {
-	cqaQuery := CQAQuery{
-		Question: question,
-	}
-	body, err := json.Marshal(cqaQuery)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("error making request to OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		var result map[string]interface{}
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return "", err
-		}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, resp.Status)
+	}
 
-		json.Unmarshal(body, &result)
-		if answers, ok := result["answers"].([]interface{}); ok && len(answers) > 0 {
-			answer := answers[0].(map[string]interface{})
-			return answer["answer"].(string), nil
+	// Parse and handle response
+	var result map[string]interface{}
+	body, _ = io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("error unmarshalling response: %w", err)
+	}
+
+	// Extract content, ensure it's under 1024 characters and summarize if necessary
+	content := ""
+	if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
+		message := choices[0].(map[string]interface{})["message"].(map[string]interface{})
+		content = message["content"].(string)
+		if len(content) > 1024 {
+			content = SummarizeToLength(content, 1024)
 		}
 	}
-	return "", fmt.Errorf("CQA API error: %v", resp.Status)
+
+	return content, nil
+}
+
+// SummarizeToLength shortens text to a max of `length` characters, rounding off sentences where possible.
+func SummarizeToLength(text string, length int) string {
+	if len(text) <= length {
+		return text
+	}
+
+	// Attempt to round off at word boundaries, preferably after full stops
+	rounded := text[:length]
+	lastPeriod := strings.LastIndex(rounded, ".")
+	if lastPeriod > length/2 { // Ensure at least half text is retained
+		return rounded[:lastPeriod+1]
+	}
+
+	// Fallback: truncate with ellipsis
+	return rounded + "..."
 }

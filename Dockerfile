@@ -8,12 +8,14 @@ RUN go mod download
 
 # Copy the rest of the application code and build
 COPY . .
-RUN go build -o main ./cmd
+RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/main.go
 
 # Use a minimal base image for the final stage
-FROM alpine:latest
+FROM debian:stable
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /root/
-COPY --from=builder /app/main .
+COPY --from=builder /app/main ./
+RUN chmod +x ./main
 
 # Expose the port
 EXPOSE 8080
