@@ -76,7 +76,7 @@ func NewApp() *App {
 	return app
 }
 
-func (a *App) ProcessMessage(chatID int64, userID int, userQuestion string, messageID int) error {
+func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion string, messageID int) error {
 	// Rate limit check
 	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
 	isNoLimitUser := false
@@ -87,11 +87,24 @@ func (a *App) ProcessMessage(chatID int64, userID int, userQuestion string, mess
 		}
 	}
 
+	isRateLimited := false
 	if !isNoLimitUser && !a.UsageCache.CanUserChat(userID) {
-		limitMsg := "Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool."
+		isRateLimited = true
+		// Calculate remaining time until limit reset
+		timeRemaining := a.UsageCache.TimeUntilLimitReset(userID)
+		minutes := int(timeRemaining.Minutes())
+		seconds := int(timeRemaining.Seconds()) % 60
+
+		limitMsg := fmt.Sprintf(
+			"Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool. Please try again in %d minutes and %d seconds.",
+			minutes, seconds,
+		)
 		if err := a.sendMessage(chatID, limitMsg, messageID); err != nil {
 			log.Printf("Failed to send rate limit message to Telegram: %v", err)
 		}
+
+		// Log the attempt to S3
+		a.logToS3(userID, username, userQuestion, 0, isRateLimited)
 		return fmt.Errorf("user rate limited")
 	}
 
@@ -119,7 +132,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, userQuestion string, mess
 		return err
 	}
 
-	a.logToS3(userID, userQuestion, responseTime)
+	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
 	return nil
 }
 
@@ -128,7 +141,7 @@ func (a *App) QueryOpenAIWithMessagesSimple(messages []OpenAIMessage) (string, e
 	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
 
 	query := OpenAIQuery{
-		Model:       "gpt-4o-mini", // Specify the model to use
+		Model:       "gpt-4o-mini",
 		Messages:    messages,
 		Temperature: 0.7,
 		MaxTokens:   500,
@@ -172,7 +185,7 @@ func (a *App) QueryOpenAIWithMessagesSimple(messages []OpenAIMessage) (string, e
 
 	if len(result.Choices) > 0 {
 		content := result.Choices[0].Message.Content
-		if len(content) > 4096 { // Ensure content fits Telegram's max message length
+		if len(content) > 4096 {
 			content = a.SummarizeToLength(content, 4096)
 		}
 		return content, nil
@@ -240,26 +253,38 @@ func (a *App) SummarizeToLength(text string, maxLength int) string {
 	return text[:maxLength]
 }
 
-func (a *App) logToS3(userID int, userPrompt string, responseTime time.Duration) {
+// logToS3 logs user interactions to an S3 bucket with details about rate limiting and usage
+func (a *App) logToS3(userID int, username, userPrompt string, responseTime time.Duration, isRateLimited bool) {
+	// Retrieve usage count for the last 10 minutes
+	queryCount := len(a.UsageCache.filterRecentMessages(userID))
+
+	// Prepare the record with new fields
 	record := []string{
 		fmt.Sprintf("%d", userID),
+		username,
 		userPrompt,
-		fmt.Sprintf("%d", responseTime.Milliseconds()),
+		fmt.Sprintf("%d ms", responseTime.Milliseconds()),
+		fmt.Sprintf("%d queries in last 10 mins", queryCount),
+		fmt.Sprintf("Rate limited: %t", isRateLimited),
 	}
 
-	var csvData [][]string
-	csvData = append(csvData, record)
+	// Define S3 bucket and object key
+	bucketName := a.S3BucketName
+	objectKey := "logs/telegram_logs.csv"
 
+	// Initialize buffer for writing CSV data
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	if err := w.WriteAll(csvData); err != nil {
+	if err := w.Write(record); err != nil {
 		log.Printf("Failed to write CSV data: %v", err)
 		return
 	}
+	w.Flush()
 
+	// Upload the CSV log to S3
 	_, err := a.S3Client.PutObject(&s3.PutObjectInput{
-		Bucket: aws.String(a.S3BucketName),
-		Key:    aws.String("logs/telegram_logs.csv"),
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
 		Body:   bytes.NewReader(buf.Bytes()),
 	})
 

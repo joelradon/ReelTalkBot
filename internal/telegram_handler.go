@@ -28,7 +28,6 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 		return "No message to process", nil
 	}
 
-	// Proceed with handling `message` as before.
 	if message.Chat == nil || message.Text == "" {
 		return "Invalid message structure", nil
 	}
@@ -37,6 +36,8 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 	userQuestion := message.Text
 	messageID := message.MessageID
 	userID := message.From.ID
+	username := message.From.Username
+
 	// Check if the message is a reply
 	isReply := message.ReplyToMessage != nil
 
@@ -96,8 +97,9 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 		return "", err
 	}
 
-	// Log the interaction in S3
-	a.logToS3(userID, userQuestion, responseTime)
+	// Log the interaction in S3, tracking if the user is rate-limited
+	isRateLimited := !a.UsageCache.CanUserChat(userID)
+	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
 
 	log.Printf("Sent message to chat %d: %s", chatID, responseText)
 	return "Message processed", nil
