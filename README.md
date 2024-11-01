@@ -1,8 +1,7 @@
-# ReelTalkBot-Go
 
-<img src="https://raw.githubusercontent.com/joelradon/ReelTalkBot-Go/refs/heads/main/image/logo.png" alt="ReelTalkBot-Go Logo" width="33%">
+<img src="https://raw.githubusercontent.com/joelradon/ReelTalkBot/refs/heads/main/image/logo.png" alt="ReelTalkBot Logo" width="33%">
 
-**ReelTalkBot-Go** is a robust Telegram bot built with Go, leveraging OpenAI's language models for intelligent, context-aware responses to user queries. It integrates with AWS S3 for logging user interactions, ensuring data persistence and easy access for analysis.
+**ReelTalkBot** is a robust Telegram bot built with Go, leveraging OpenAI's language models for intelligent, context-aware responses to user queries. It integrates with AWS S3 for logging user interactions, ensuring data persistence and easy access for analysis.
 
 ---
 
@@ -50,8 +49,8 @@ Before beginning, ensure you have:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/joelr/ReelTalkBot-Go.git
-cd ReelTalkBot-Go
+git clone https://github.com/joelr/ReelTalkBot.git
+cd ReelTalkBot
 
 ```
 
@@ -130,8 +129,8 @@ go run ./cmd/main.go
 *Alternatively, you can build the project and run the executable:*
 
 ```bash
-go build -o ReelTalkBot-Go ./cmd/main.go
-./ReelTalkBot-Go
+go build -o ReelTalkBot ./cmd/main.go
+./ReelTalkBot
 ```
 
 **Note:** Ensure that your AWS credentials are properly configured in your environment or via AWS configuration files to allow the bot to access the S3 bucket.
@@ -141,7 +140,7 @@ go build -o ReelTalkBot-Go ./cmd/main.go
 ## 📁 Project Structure
 
 ```
-ReelTalkBot-Go/
+ReelTalkBot/
 ├── cmd/
 │   └── main.go                 # Entry point of the application
 ├── internal/
@@ -166,7 +165,7 @@ ReelTalkBot-Go/
 
 ## 📊 Logging to AWS S3
 
-ReelTalkBot-Go logs all user interactions to an AWS S3 bucket in CSV format. Each log entry includes:
+ReelTalkBot logs all user interactions to an AWS S3 bucket in CSV format. Each log entry includes:
 
 - `userID`: Telegram user ID
 - `username`: Telegram username
@@ -194,7 +193,7 @@ After running the bot, navigate to your S3 bucket and check the `logs/telegram_l
 
 ## 🤝 Contributing
 
-Contributions are welcome! To contribute to **ReelTalkBot-Go**, follow these steps:
+Contributions are welcome! To contribute to **ReelTalkBot**, follow these steps:
 
 1. **Fork the Repository**
 2. **Create a New Branch**
