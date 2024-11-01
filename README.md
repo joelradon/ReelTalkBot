@@ -2,7 +2,7 @@
 
 ![ReelTalkBot-Go Logo](https://example.com/logo.png)
 
-**ReelTalkBot-Go** is a feature-rich Telegram bot built in Go that leverages OpenAI's powerful language models to provide intelligent and context-aware responses to user queries. Additionally, it integrates seamlessly with AWS S3 for robust logging of user interactions, ensuring data persistence and easy access for analysis.
+**ReelTalkBot-Go** is a robust Telegram bot built with Go, leveraging OpenAI's language models for intelligent, context-aware responses to user queries. It integrates with AWS S3 for logging user interactions, ensuring data persistence and easy access for analysis.
 
 ---
 
@@ -24,36 +24,35 @@
 
 ## 🚀 Features
 
-- **Intelligent Responses:** Utilizes OpenAI's GPT models to generate meaningful and context-aware replies.
-- **Telegram Integration:** Responds to messages in both private and group chats, with support for mentions.
-- **AWS S3 Logging:** Logs all user interactions, including prompts and response times, to an AWS S3 bucket in CSV format.
-- **Rate Limiting:** Ensures the bot adheres to Telegram's rate limits to prevent message throttling.
-- **Caching:** Implements a simple in-memory cache to optimize performance and reduce redundant API calls.
-- **Secure Configuration:** Manages sensitive information using environment variables.
+- **Intelligent Responses:** Utilizes OpenAI's GPT models for meaningful, context-aware replies.
+- **Telegram Integration:** Responds to messages in both private and group chats, supporting mentions.
+- **AWS S3 Logging:** Logs all user interactions, including prompts, response times, rate limits, and usage frequency in CSV format.
+- **Rate Limiting:** Limits user queries to 10 per 10 minutes, with time remaining until limit reset.
+- **Caching and Rate Tracking:** Optimizes performance and prevents redundant API calls, tracking usage history.
+- **Secure Configuration:** Manages sensitive data through environment variables and AWS Secrets Manager (optional).
 
 ---
 
 ## 🔧 Prerequisites
 
-Before you begin, ensure you have met the following requirements:
+Before beginning, ensure you have:
 
-- **Go:** Version **1.20** or later installed. [Download Go](https://golang.org/dl/)
-- **AWS Account:** To set up AWS S3 for logging.
-- **Telegram Account:** To create and manage your Telegram bot.
-- **OpenAI API Key:** To access OpenAI's language models. [Get an API Key](https://platform.openai.com/account/api-keys)
-- **Git:** For cloning the repository. [Download Git](https://git-scm.com/downloads)
+- **Go** (v1.20 or later): [Download Go](https://golang.org/dl/)
+- **AWS Account**: For AWS S3 integration.
+- **Telegram Account**: For managing your Telegram bot.
+- **OpenAI API Key**: To access OpenAI's language models. [Get an API Key](https://platform.openai.com/account/api-keys)
+- **Git**: To clone the repository. [Download Git](https://git-scm.com/downloads)
 
 ---
 
 ## 🛠️ Installation
-
-Follow these steps to set up and run **ReelTalkBot-Go** locally:
 
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/joelr/ReelTalkBot-Go.git
 cd ReelTalkBot-Go
+
 ```
 
 ### 2. Install Dependencies
@@ -144,21 +143,23 @@ go build -o ReelTalkBot-Go ./cmd/main.go
 ```
 ReelTalkBot-Go/
 ├── cmd/
-│   └── main.go                  # Entry point of the application
+│   └── main.go                 # Entry point of the application
 ├── internal/
-│   ├── app.go                   # Application setup and main logic
-│   ├── api_requests.go          # OpenAI API interaction
-│   ├── cache.go                 # In-memory caching utilities
-│   ├── telegram_handler.go      # Telegram message handling
-│   ├── s3_client.go             # AWS S3 client setup and logging
-│   ├── secrets_manager.go       # AWS Secrets Manager integration (if applicable)
-│   ├── types.go                 # Type definitions for API interactions
-│   └── utils.go                 # Utility functions
-├── go.mod                       # Go module file
-├── go.sum                       # Go checksum file
-├── .env                         # Environment variables (not committed)
-├── .gitignore                   # Git ignore rules
-└── README.md                    # Project documentation
+│   ├── app.go                  # Application setup and main logic
+│   ├── api_requests.go         # OpenAI API interaction
+│   ├── cache.go                # In-memory caching utilities
+│   ├── telegram_handler.go     # Telegram message handling
+│   ├── s3_client.go            # AWS S3 client setup and logging
+│   ├── secrets_manager.go      # AWS Secrets Manager integration (if applicable)
+│   ├── types.go                # Type definitions for API interactions
+│   ├── usage_cache.go          # User rate-limiting cache and tracking
+│   └── utils.go                # Utility functions
+├── go.mod                      # Go module file
+├── go.sum                      # Go checksum file
+├── .env                        # Environment variables (not committed)
+├── .gitignore                  # Git ignore rules
+└── README.md                   # Project documentation
+
 ```
 
 ---
@@ -171,6 +172,8 @@ ReelTalkBot-Go logs all user interactions to an AWS S3 bucket in CSV format. Eac
 - `username`: Telegram username
 - `prompt`: User's message
 - `responseTimeMS`: Time taken to generate a response in milliseconds
+- `queryCount`: Number of queries in the last 10 minutes
+- `isRateLimited`: Indicates if the user is currently rate-limited
 
 ### 1. Set Up AWS S3 Bucket
 
