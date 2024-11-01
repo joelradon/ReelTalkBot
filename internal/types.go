@@ -4,7 +4,21 @@ package internal
 
 // Update represents an incoming Telegram update
 type Update struct {
-	Message *TelegramMessage `json:"message"`
+	UpdateID      int              `json:"update_id"`
+	Message       *TelegramMessage `json:"message,omitempty"`
+	EditedMessage *TelegramMessage `json:"edited_message,omitempty"`
+	ChannelPost   *TelegramMessage `json:"channel_post,omitempty"`
+	CallbackQuery *CallbackQuery   `json:"callback_query,omitempty"`
+	// Add more fields as necessary based on the payload.
+}
+
+// CallbackQuery represents an incoming callback query from inline buttons.
+type CallbackQuery struct {
+	ID           string           `json:"id"`
+	From         *User            `json:"from"`
+	Data         string           `json:"data,omitempty"`
+	Message      *TelegramMessage `json:"message,omitempty"`
+	ChatInstance string           `json:"chat_instance"`
 }
 
 // TelegramMessage represents a Telegram message
