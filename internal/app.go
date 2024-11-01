@@ -268,22 +268,38 @@ func (a *App) logToS3(userID int, username, userPrompt string, responseTime time
 		fmt.Sprintf("Rate limited: %t", isRateLimited),
 	}
 
-	// Define S3 bucket and object key
-	bucketName := a.S3BucketName
-	objectKey := "logs/telegram_logs.csv"
+	// Get the current date to create a unique log file for each day
+	currentDate := time.Now().Format("2006-01-02") // Format as YYYY-MM-DD
+	objectKey := fmt.Sprintf("logs/telegram_logs_%s.csv", currentDate)
 
-	// Initialize buffer for writing CSV data
+	// Check if the file already exists, and if so, retrieve it
+	var existingData [][]string
+	existingObj, err := a.S3Client.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(a.S3BucketName),
+		Key:    aws.String(objectKey),
+	})
+	if err == nil {
+		bodyBytes, _ := io.ReadAll(existingObj.Body)
+		defer existingObj.Body.Close()
+
+		r := csv.NewReader(bytes.NewReader(bodyBytes))
+		existingData, _ = r.ReadAll()
+	}
+
+	// Append new record to existing data
+	existingData = append(existingData, record)
+
+	// Write all data back to the CSV format
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	if err := w.Write(record); err != nil {
+	if err := w.WriteAll(existingData); err != nil {
 		log.Printf("Failed to write CSV data: %v", err)
 		return
 	}
-	w.Flush()
 
-	// Upload the CSV log to S3
-	_, err := a.S3Client.PutObject(&s3.PutObjectInput{
-		Bucket: aws.String(bucketName),
+	// Upload the updated CSV log to S3
+	_, err = a.S3Client.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(a.S3BucketName),
 		Key:    aws.String(objectKey),
 		Body:   bytes.NewReader(buf.Bytes()),
 	})
@@ -291,6 +307,6 @@ func (a *App) logToS3(userID int, username, userPrompt string, responseTime time
 	if err != nil {
 		log.Printf("Failed to upload log to S3: %v", err)
 	} else {
-		log.Printf("Successfully logged data to S3")
+		log.Printf("Successfully logged data to S3 for date: %s", currentDate)
 	}
 }
