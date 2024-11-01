@@ -1,3 +1,5 @@
+// internal/cache.go
+
 package internal
 
 import (
@@ -5,42 +7,46 @@ import (
 	"time"
 )
 
-type CacheEntry struct {
-	Response   string
-	Expiration time.Time
-}
-
 type Cache struct {
-	mu      sync.Mutex
-	entries map[string]CacheEntry
+	data  map[string]string
+	mutex sync.RWMutex
 }
 
-// NewCache initializes a new Cache
-func NewCache() Cache {
-	return Cache{
-		entries: make(map[string]CacheEntry),
+func NewCache() *Cache {
+	return &Cache{
+		data: make(map[string]string),
 	}
 }
 
-// Get retrieves a cached response if valid
 func (c *Cache) Get(key string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, found := c.entries[key]
-	if !found || time.Now().After(entry.Expiration) {
-		return "", false
-	}
-	return entry.Response, true
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	val, exists := c.data[key]
+	return val, exists
 }
 
-// Set saves a response in the cache with a 30-minute expiration
-func (c *Cache) Set(key, response string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Cache) Set(key, value string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.data[key] = value
+}
 
-	c.entries[key] = CacheEntry{
-		Response:   response,
-		Expiration: time.Now().Add(30 * time.Minute),
-	}
+// StartEviction periodically removes expired entries from the cache.
+// Currently, it deletes all entries at each interval.
+// Implement TTL checks or other eviction policies as needed.
+func (c *Cache) StartEviction(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	go func() {
+		for range ticker.C {
+			c.mutex.Lock()
+			for key := range c.data { // Removed 'value' as it's unused
+				// TODO: Implement TTL checks or other eviction policies
+				// Example: delete all entries (replace with actual logic)
+				delete(c.data, key)
+			}
+			c.mutex.Unlock()
+		}
+	}()
 }

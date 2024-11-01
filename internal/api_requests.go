@@ -1,92 +1,102 @@
+// internal/api_requests.go
+
 package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"time"
 )
 
+// OpenAIQuery represents the request payload for OpenAI API
 type OpenAIQuery struct {
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float32   `json:"temperature"`
+	Model       string          `json:"model"`
+	Messages    []OpenAIMessage `json:"messages"`
+	Temperature float32         `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
 }
 
-type Message struct {
+// OpenAIMessage represents a message in the OpenAI chat
+type OpenAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// QueryOpenAIWithSummarization handles querying OpenAI and ensures summarized responses.
-func QueryOpenAIWithSummarization(prompt, baseEndpoint, apiKey string) (string, error) {
-	deploymentName := "gpt-4o-mini"
-	apiVersion := "2024-08-01-preview"
-	fullEndpoint := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseEndpoint, deploymentName, apiVersion)
+// OpenAIResponse represents the response from OpenAI API
+type OpenAIResponse struct {
+	Choices []struct {
+		Index        int           `json:"index"`
+		Message      OpenAIMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
 
-	client := &http.Client{}
+// QueryOpenAIWithMessages sends a request to OpenAI with given messages and returns response text
+func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) {
+	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
+
 	query := OpenAIQuery{
-		Messages:    []Message{{Role: "user", Content: prompt}},
-		MaxTokens:   500,
+		Model:       "gpt-4o-mini", // Use the appropriate model
+		Messages:    messages,
 		Temperature: 0.7,
+		MaxTokens:   500,
 	}
 
 	body, err := json.Marshal(query)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal OpenAI query: %w", err)
 	}
-	req, err := http.NewRequest("POST", fullEndpoint, bytes.NewBuffer(body))
+
+	// Use context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", fullEndpoint, bytes.NewBuffer(body))
 	if err != nil {
 		return "", fmt.Errorf("failed to create OpenAI request: %w", err)
 	}
-	req.Header.Set("api-key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.OpenAIKey)
+
+	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("error making request to OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading response body: %w", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, resp.Status)
+		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse and handle response
-	var result map[string]interface{}
-	body, _ = io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &result); err != nil {
+	var result OpenAIResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return "", fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
-	// Extract content, ensure it's under 1024 characters and summarize if necessary
-	content := ""
-	if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
-		message := choices[0].(map[string]interface{})["message"].(map[string]interface{})
-		content = message["content"].(string)
-		if len(content) > 1024 {
-			content = SummarizeToLength(content, 1024)
+	// Extract content
+	if len(result.Choices) > 0 {
+		content := result.Choices[0].Message.Content
+		if len(content) > 4096 { // Telegram's max message length
+			content = SummarizeToLength(content, 4096)
 		}
+		return content, nil
 	}
 
-	return content, nil
-}
-
-// SummarizeToLength shortens text to a max of `length` characters, rounding off sentences where possible.
-func SummarizeToLength(text string, length int) string {
-	if len(text) <= length {
-		return text
-	}
-
-	// Attempt to round off at word boundaries, preferably after full stops
-	rounded := text[:length]
-	lastPeriod := strings.LastIndex(rounded, ".")
-	if lastPeriod > length/2 { // Ensure at least half text is retained
-		return rounded[:lastPeriod+1]
-	}
-
-	// Fallback: truncate with ellipsis
-	return rounded + "..."
+	return "", fmt.Errorf("no choices returned in OpenAI response")
 }

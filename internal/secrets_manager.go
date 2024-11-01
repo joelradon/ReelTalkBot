@@ -9,7 +9,7 @@ import (
 func GetSecret(key string) (string, error) {
 	secret := os.Getenv(key)
 	if secret == "" {
-		return "", fmt.Errorf("environment variable %s not set", key)
+		return "", fmt.Errorf("required environment variable not set")
 	}
 	return secret, nil
 }
