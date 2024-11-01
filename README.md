@@ -1,145 +1,300 @@
 # ReelTalkBot-Go
 
-ReelTalkBot-Go is a Telegram chatbot focused on providing fishing information to users. This bot integrates with Azure OpenAI and a Custom Question Answering (CQA) service to respond to fishing-related queries. It also utilizes caching to limit API calls and manage rate limits, especially for high-usage scenarios.
+![ReelTalkBot-Go Logo](https://example.com/logo.png)
 
-## Table of Contents
-- [Folder Structure](#folder-structure)
-- [Project Setup](#project-setup)
-- [Environment Variables](#environment-variables)
-- [Application Files](#application-files)
-  - [cmd/main.go](#cmdmaingo)
-  - [internal/app.go](#internalappgo)
-  - [internal/api_requests.go](#internalapi_requestsg)
-  - [internal/cache.go](#internalcachego)
-  - [internal/secrets_manager.go](#internalsecrets_managergo)
-  - [internal/telegram_handler.go](#internaltelegram_handlergo)
-- [How It Works](#how-it-works)
-- [API Endpoints](#api-endpoints)
+**ReelTalkBot-Go** is a feature-rich Telegram bot built in Go that leverages OpenAI's powerful language models to provide intelligent and context-aware responses to user queries. Additionally, it integrates seamlessly with AWS S3 for robust logging of user interactions, ensuring data persistence and easy access for analysis.
 
 ---
 
-## Folder Structure
+## 📋 Table of Contents
 
-The application has the following folder and file structure:
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Bot](#running-the-bot)
+- [Project Structure](#project-structure)
+- [Logging to AWS S3](#logging-to-aws-s3)
+- [Contributing](#contributing)
+- [License](#license)
+- [Troubleshooting](#troubleshooting)
+- [Contact](#contact)
 
-
-
-## Folder Structure
-```
-ReelTalkBot-Go/- 
-cmd/
-  - main.go            # Main entry point for starting the server- 
-  
-  internal/
-  - app.go             # Main application setup and configuration
-  - api_requests.go    # Handles requests to OpenAI services
-  - cache.go           # Implements caching to reduce API calls
-  - secrets_manager.go # Manages environment variable-based secrets
-  - telegram_handler.go # Processes incoming Telegram messages- Dockerfile           # Docker setup for containerized deployment- go.mod               # Go module dependencies- go.
-  
-  sum               # Go module checksums
-```
 ---
-## Project Setup
- 1. **Clone the repository:**
+
+## 🚀 Features
+
+- **Intelligent Responses:** Utilizes OpenAI's GPT models to generate meaningful and context-aware replies.
+- **Telegram Integration:** Responds to messages in both private and group chats, with support for mentions.
+- **AWS S3 Logging:** Logs all user interactions, including prompts and response times, to an AWS S3 bucket in CSV format.
+- **Rate Limiting:** Ensures the bot adheres to Telegram's rate limits to prevent message throttling.
+- **Caching:** Implements a simple in-memory cache to optimize performance and reduce redundant API calls.
+- **Secure Configuration:** Manages sensitive information using environment variables.
+
+---
+
+## 🔧 Prerequisites
+
+Before you begin, ensure you have met the following requirements:
+
+- **Go:** Version **1.20** or later installed. [Download Go](https://golang.org/dl/)
+- **AWS Account:** To set up AWS S3 for logging.
+- **Telegram Account:** To create and manage your Telegram bot.
+- **OpenAI API Key:** To access OpenAI's language models. [Get an API Key](https://platform.openai.com/account/api-keys)
+- **Git:** For cloning the repository. [Download Git](https://git-scm.com/downloads)
+
+---
+
+## 🛠️ Installation
+
+Follow these steps to set up and run **ReelTalkBot-Go** locally:
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/joelr/ReelTalkBot-Go.git
+cd ReelTalkBot-Go
+```
+
+### 2. Install Dependencies
+
+Ensure you have Go installed (version 1.20 or later). Then, fetch the required dependencies:
+
+```bash
+go mod tidy
+```
+
+*Note: If you encounter issues with dependencies, refer to the [Troubleshooting](#troubleshooting) section.*
+
+---
+
+## ⚙️ Configuration
+
+The bot requires several environment variables to function correctly. You can manage these using a `.env` file.
+
+### 1. Create a `.env` File
+
+In the root directory of the project, create a `.env` file:
+
+```bash
+touch .env
+```
+
+### 2. Define Environment Variables
+
+Open the `.env` file in your preferred text editor and add the following variables:
+
+```env
+# Telegram Bot Token
+TELEGRAM_TOKEN=your_telegram_bot_token
+
+# OpenAI API Key
+OPENAI_KEY=your_openai_api_key
+
+# OpenAI Endpoint (optional, defaults to OpenAI's API)
+OPENAI_ENDPOINT=https://api.openai.com
+
+# Telegram Bot Username (without @)
+BOT_USERNAME=YourBotUsername
+
+# AWS Configuration
+AWS_REGION=your_aws_region
+AWS_ENDPOINT_URL_S3=https://s3.your-region.amazonaws.com # Modify if using a custom endpoint
+
+# AWS S3 Bucket Name
+BUCKET_NAME=your_s3_bucket_name
+```
+
+**Ensure you replace the placeholder values with your actual credentials and configurations.**
+
+### 3. Secure Your `.env` File
+
+To prevent sensitive information from being committed to version control, add `.env` to your `.gitignore` file:
+
+```gitignore
+# .gitignore
+
+# Environment Variables
+.env
+```
+
+---
+
+## 🏃‍♂️ Running the Bot
+
+Once you've installed the dependencies and configured the environment variables, you can run the bot using the following command:
+
+```bash
+go run ./cmd/main.go
+```
+
+*Alternatively, you can build the project and run the executable:*
+
+```bash
+go build -o ReelTalkBot-Go ./cmd/main.go
+./ReelTalkBot-Go
+```
+
+**Note:** Ensure that your AWS credentials are properly configured in your environment or via AWS configuration files to allow the bot to access the S3 bucket.
+
+---
+
+## 📁 Project Structure
+
+```
+ReelTalkBot-Go/
+├── cmd/
+│   └── main.go                  # Entry point of the application
+├── internal/
+│   ├── app.go                   # Application setup and main logic
+│   ├── api_requests.go          # OpenAI API interaction
+│   ├── cache.go                 # In-memory caching utilities
+│   ├── telegram_handler.go      # Telegram message handling
+│   ├── s3_client.go             # AWS S3 client setup and logging
+│   ├── secrets_manager.go       # AWS Secrets Manager integration (if applicable)
+│   ├── types.go                 # Type definitions for API interactions
+│   └── utils.go                 # Utility functions
+├── go.mod                       # Go module file
+├── go.sum                       # Go checksum file
+├── .env                         # Environment variables (not committed)
+├── .gitignore                   # Git ignore rules
+└── README.md                    # Project documentation
+```
+
+---
+
+## 📊 Logging to AWS S3
+
+ReelTalkBot-Go logs all user interactions to an AWS S3 bucket in CSV format. Each log entry includes:
+
+- `userID`: Telegram user ID
+- `username`: Telegram username
+- `prompt`: User's message
+- `responseTimeMS`: Time taken to generate a response in milliseconds
+
+### 1. Set Up AWS S3 Bucket
+
+1. **Create an S3 Bucket:**
+   - Log in to your AWS Management Console.
+   - Navigate to S3 and create a new bucket (e.g., `reeltalkbot-logs`).
+   - Configure permissions and access policies as needed.
+
+2. **Configure AWS Credentials:**
+   - Ensure that your AWS credentials (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`) are set in your environment or via AWS configuration files.
+   - Alternatively, use IAM roles if deploying on AWS infrastructure.
+
+### 2. Verify Logging
+
+After running the bot, navigate to your S3 bucket and check the `logs/telegram_logs.csv` file to ensure that logs are being recorded correctly.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! To contribute to **ReelTalkBot-Go**, follow these steps:
+
+1. **Fork the Repository**
+2. **Create a New Branch**
    ```bash
-   git clone https://github.com/username/ReelTalkBot-Go.git
-   cd ReelTalkBot-Go
+   git checkout -b feature/YourFeature
    ```
- 2. **Install dependencies**: 
- 
- Ensure you have Go installed. Then, download dependencies:
+3. **Make Your Changes**
+4. **Commit Your Changes**
    ```bash
-   go mod tidy
+   git commit -m "Add Your Feature"
    ```
-
- 3. **Set up environment variables**:
- 
-  Create a `.env` file to configure required environment variables (see Environment
- Variables).
-
- 4. **Run the application**:
-
+5. **Push to the Branch**
    ```bash
-   go run cmd/main.go
+   git push origin feature/YourFeature
    ```
- ## Environment Variables
+6. **Open a Pull Request**
 
- The application requires the following environment variables:- `TELEGRAM_TOKEN`: Telegram bot token.
-- `CQA_KEY`: API key for Custom Question Answering.- `CQA_ENDPOINT`: Endpoint for Custom Question Answering.- `OPENAI_KEY`: API key for OpenAI.- `OPENAI_ENDPOINT`: Endpoint for OpenAI.
+Please ensure your code adheres to the project's coding standards and passes all tests.
 
- ## Application Files
+---
 
- ### cmd/main.go
- The main entry point of the application. It initializes the application by calling `NewApp()` and starts the server, exposing
- an API endpoint at `/api/FishingBotFunction`.
- **Key Sections**:- 
- **HTTP Server**: Configures and starts an HTTP server on port 8080, using the handler function `app.Handler`.
- 
- ### internal/app.go
- This file defines the main `App` structure, which holds the configuration and dependencies required by the application.
- **Key Sections**:- 
- **NewApp Function**: Initializes and returns an `App` instance by loading environment variables and configuring the
- cache.- 
- **App Struct**: Holds configurations and API keys required by the bot, such as `TelegramToken`, `CQAKey`,
- `CQAEndpoint`, `OpenAIKey`, `OpenAIEndpoint`, and an in-memory `Cache` for reducing API calls.
- 
- ### internal/api_requests.go
- Handles requests to OpenAI and the Custom Question Answering service.
-**Key Sections**:- 
-**QueryOpenAIWithCache Function**:
- Manages requests to OpenAI, using caching to prevent excessive API calls.
- Caches responses for 30 minutes.- 
- 
- **QueryCQA Function**: 
- Sends a request to the Custom Question Answering API. The function is called if a specific
- question matches CQA; otherwise, the bot queries OpenAI.
+## 📝 License
 
- ### internal/cache.go
- Implements caching to store responses temporarily and reduce API requests. This file defines the `Cache` struct and
- associated methods for setting and getting cached responses.
+This project is licensed under the [MIT License](LICENSE).
 
- **Key Sections**:- 
- **Cache Struct**: Stores cached entries, each with an expiration time.- 
- **Get and Set Methods**: Manages storing responses and retrieving them if they are still valid.
+---
 
- ### internal/secrets_manager.go
- Manages secrets loaded from environment variables, ensuring they are accessible throughout the application.
+## 🛠️ Troubleshooting
 
- **Key Sections**:
- - **Environment Variables**: Retrieves environment variables for Telegram, OpenAI, and CQA API keys and endpoints.- 
- **NewApp Configuration**: Loads variables during app initialization in `app.go`.
+### **1. Go Module Errors**
 
- ### internal/telegram_handler.go
- Processes incoming messages from Telegram, first attempting to answer using cached or Custom Question Answering
- responses, then querying OpenAI if needed.
+If you encounter issues related to `go.mod`, such as invalid module paths or versions:
 
- **Key Sections**:
-- **Handler Function**: The main HTTP handler for incoming messages from Telegram.- **HandleTelegramMessage Function**: Processes each message by first checking the cache, then querying CQA, and
- finally querying OpenAI if necessary.
- ## How It Works
- 1. **Message Reception**: A message sent by a user in Telegram is received by `HandleTelegramMessage` in
- `telegram_handler.go`.
- 2. **Cache Lookup**: The bot checks the cache for a matching response to avoid unnecessary API calls.
- 3. **Custom Question Answering (CQA)**: If there is no cached response, it checks if the question is a match in the
- Custom Question Answering API.
- 4. **OpenAI Query**: If neither cache nor CQA has a response, it queries OpenAI and caches the response for future
- queries.
- 5. **Rate Limiting and 429 Management**: Uses caching and backoff retry to handle rate limits, with a wait time to avoid
- consecutive 429 errors.
- ## API Endpoints- `/api/FishingBotFunction`
-  This endpoint receives messages from Telegram, processes them using `HandleTelegramMessage` in
- `telegram_handler.go`, and sends a response back to the user.
- ## Docker Deployment
- To build and run the application in a Docker container:
-### Build Docker Image:
-   ```bash
-   docker build -t reeltalkbot-go .
-   ```
- ### Run Docker Container:
-   ```bash
-   docker run -d -p 8080:8080 --env-file .env reeltalkbot-go
-   ```
- ## Troubleshooting- **429 Too Many Requests**: Adjust the cache duration or reduce API call frequency.- **Telegram Handler Undefined**: Ensure you use `app.Handler` in `main.go`.- **Environment Variable Issues**: Confirm all environment variables are set correctly.
- This documentation covers the details and setup of each application component. If there are further questions or
- customizations needed, please refer to the comments within the source code or contact the maintainers.
+- **Ensure Correct Module Paths:**  
+  Verify that all module paths in `go.mod` are accurate and refer to existing modules.
+
+- **Clear Module Cache:**
+  ```bash
+  go clean -modcache
+  ```
+
+- **Set Go Proxy:**
+  ```bash
+  go env -w GOPROXY=https://proxy.golang.org,direct
+  ```
+
+- **Fetch Dependencies Again:**
+  ```bash
+  go get -u ./...
+  go mod tidy
+  ```
+
+### **2. Duplicate Method Declarations**
+
+If you receive errors about duplicate method declarations:
+
+- **Review Code for Duplicates:**  
+  Open the affected `.go` files and ensure that each method is uniquely defined.
+
+- **Remove or Rename Duplicates:**  
+  If a method is defined multiple times, remove the redundant ones or rename them to reflect different functionalities.
+
+### **3. AWS S3 Logging Issues**
+
+If logs are not appearing in your S3 bucket:
+
+- **Verify AWS Credentials:**  
+  Ensure that the bot has the necessary permissions to write to the S3 bucket.
+
+- **Check Bucket Configuration:**  
+  Confirm that the bucket name and region are correctly specified in the `.env` file.
+
+- **Review Application Logs:**  
+  Check the bot's logs for any errors related to AWS S3 operations.
+
+### **4. Telegram Bot Not Responding**
+
+If the bot isn't responding to messages:
+
+- **Verify Webhook Setup:**  
+  Ensure that your Telegram bot's webhook is correctly set to your server's URL.
+
+  ```bash
+  https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook?url=<YOUR_PUBLIC_URL>/webhook
+  ```
+
+- **Check Server Accessibility:**  
+  Ensure that your server is publicly accessible and that no firewall rules are blocking Telegram's requests.
+
+- **Review Application Logs:**  
+  Look for any errors or warnings in the bot's logs that might indicate issues with message handling.
+
+---
+
+## 📫 Contact
+
+For any questions or support, feel free to reach out:
+
+-
+- **GitHub:** [@joelradon](https://github.com/joelradon)
+
+---
+
+**Happy Coding!** 🚀
+
+---
