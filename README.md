@@ -1,6 +1,6 @@
 # ReelTalkBot-Go
 
-![ReelTalkBot-Go Logo](https://example.com/logo.png)
+<img src="https://raw.githubusercontent.com/joelradon/ReelTalkBot-Go/refs/heads/main/image/logo.png" alt="ReelTalkBot-Go Logo" width="33%">
 
 **ReelTalkBot-Go** is a robust Telegram bot built with Go, leveraging OpenAI's language models for intelligent, context-aware responses to user queries. It integrates with AWS S3 for logging user interactions, ensuring data persistence and easy access for analysis.
 
