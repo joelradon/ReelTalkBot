@@ -312,6 +312,3 @@ For any questions or support, feel free to reach out:
 **Happy Coding!** 🚀
 
 ---
-```
-
-This `README.md` includes details about the features, installation, configuration, running the bot, project structure, logging, contributing, troubleshooting, and contact information. Feel free to modify any sections according to your preferences or additional functionality that you might want to highlight!
