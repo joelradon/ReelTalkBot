@@ -3,11 +3,8 @@
 package internal
 
 import (
-	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 )
 
@@ -73,39 +70,6 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 	}
 
 	return "Message processed", nil
-}
-
-// SendMessageWithThrottle sends a message to Telegram, considering rate limits
-func (a *App) SendMessageWithThrottle(chatID int64, text string, replyToMessageID int, userID int) error {
-	// Check if the user has exceeded the message limit
-	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
-	isNoLimitUser := false
-	for _, id := range noLimitUsers {
-		if id == strconv.Itoa(userID) {
-			isNoLimitUser = true
-			break
-		}
-	}
-
-	if !isNoLimitUser && !a.UsageCache.CanUserChat(userID) {
-		// Calculate the remaining time until limit reset
-		timeRemaining := a.UsageCache.TimeUntilLimitReset(userID)
-		minutes := int(timeRemaining.Minutes())
-		seconds := int(timeRemaining.Seconds()) % 60
-
-		// Customize the rate limit message to include time until reset
-		limitMsg := fmt.Sprintf(
-			"Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool. Please try again in %d minutes and %d seconds.",
-			minutes, seconds,
-		)
-		return a.sendMessage(chatID, limitMsg, replyToMessageID)
-	}
-
-	// Track usage
-	a.UsageCache.AddUsage(userID)
-
-	// Proceed to send the message through Telegram API using the `sendMessage` function from `app.go`
-	return a.sendMessage(chatID, text, replyToMessageID)
 }
 
 // Helper function to check if the mention is the bot's username

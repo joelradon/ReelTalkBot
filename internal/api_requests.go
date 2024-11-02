@@ -55,7 +55,7 @@ func (a *App) ExtractKeywords(userID int, message string) ([]string, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Set a timeout context
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -99,7 +99,7 @@ func (a *App) GenerateResponse(userID int, message string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Set a timeout context
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 

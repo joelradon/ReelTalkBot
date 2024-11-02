@@ -133,8 +133,8 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	log.Printf("Extracted keywords: %v", keywords)
 
 	// Step 2: Generate Response using AI microservice
-	// Format keywords appropriately (e.g., space-separated or comma-separated)
-	keywordsStr := strings.Join(keywords, " ")
+	// Format keywords appropriately (e.g., comma-separated)
+	keywordsStr := strings.Join(keywords, ", ")
 	response, err := a.GenerateResponse(userID, keywordsStr)
 	if err != nil {
 		log.Printf("Error generating response: %v", err)
@@ -147,8 +147,8 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	// Summarize the response if it's too long
 	finalMessage := a.PrepareFinalMessageDetailed(response)
 
-	// Send the response back to the user
-	if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
+	// Send the response back to the user with rate limiting consideration
+	if err := a.SendMessageWithThrottle(chatID, finalMessage, messageID, userID); err != nil {
 		log.Printf("Failed to send message to Telegram: %v", err)
 		return err
 	}
@@ -156,6 +156,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	// Log the interaction in S3, tracking if the user is rate-limited
 	isRateLimited = !a.UsageCache.CanUserChat(userID)
 	a.logToS3(userID, username, userQuestion, 0, isRateLimited) // Assuming responseTime is not tracked here
+
 	return nil
 }
 
@@ -174,6 +175,39 @@ func (a *App) PrepareFinalMessageDetailed(responseText string) string {
 		responseText = a.SummarizeToLength(responseText, maxLength)
 	}
 	return responseText
+}
+
+// SendMessageWithThrottle sends a message to Telegram, considering rate limits
+func (a *App) SendMessageWithThrottle(chatID int64, text string, replyToMessageID int, userID int) error {
+	// Check if the user has exceeded the message limit
+	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
+	isNoLimitUser := false
+	for _, id := range noLimitUsers {
+		if id == strconv.Itoa(userID) {
+			isNoLimitUser = true
+			break
+		}
+	}
+
+	if !isNoLimitUser && !a.UsageCache.CanUserChat(userID) {
+		// Calculate the remaining time until limit reset
+		timeRemaining := a.UsageCache.TimeUntilLimitReset(userID)
+		minutes := int(timeRemaining.Minutes())
+		seconds := int(timeRemaining.Seconds()) % 60
+
+		// Customize the rate limit message to include time until reset
+		limitMsg := fmt.Sprintf(
+			"Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool. Please try again in %d minutes and %d seconds.",
+			minutes, seconds,
+		)
+		return a.sendMessage(chatID, limitMsg, replyToMessageID)
+	}
+
+	// Track usage
+	a.UsageCache.AddUsage(userID)
+
+	// Proceed to send the message through Telegram API using the `sendMessage` function
+	return a.sendMessage(chatID, text, replyToMessageID)
 }
 
 // sendMessage sends a plain text message to a Telegram chat
