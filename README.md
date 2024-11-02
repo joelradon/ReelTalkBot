@@ -301,6 +301,79 @@ If the bot isn't responding to messages:
 
 ---
 
+# Training the ReelTalkBot with the /learn Command
+
+## Overview
+
+The `/learn` command in the ReelTalkBot application allows authorized users to train the bot with new knowledge entries. This feature enhances the bot's capabilities by adding relevant information that can be retrieved in future interactions. Users can input training data related to bodies of water, fish species, water types, question templates, and answers.
+
+## How to Use the /learn Command
+
+### Prerequisites
+
+- You must be an authorized user to access the training feature. Authorized users are defined in the environment variable `NO_LIMIT_USERS` within the bot's configuration.
+- Ensure the knowledge base feature is activated by setting the environment variable `KNOWLEDGE_BASE` to `ON`.
+
+### Command Format
+
+The `/learn` command should be formatted as follows:
+
+```
+/learn [training data]
+```
+
+- **training data**: This is the information you want to teach the bot. It should include relevant details such as the body of water, fish species, water type, question template, and the corresponding answer.
+
+### Example Usage
+
+To train the bot with a new knowledge entry, you might use the command like this:
+
+```
+/learn I want to learn about the Salmon River. What species are common here? The common species include King Salmon and Coho Salmon.
+```
+
+### Command Breakdown
+
+1. **Trigger Command**: Start with the `/learn` command to indicate that you want to train the bot.
+2. **Provide Training Data**: Follow the command with a clear and structured training sentence that includes:
+   - A reference to the body of water (e.g., "Salmon River").
+   - The question template or the question you want the bot to recognize.
+   - The answer or information related to the question.
+
+## Bot Response
+
+After submitting the `/learn` command with training data, the bot will respond with a confirmation message, indicating that the training data has been received and is being processed. Here’s what you might expect:
+
+```
+Training data received and is being processed.
+```
+
+If you are not authorized, the bot will respond with:
+
+```
+You are not authorized to train the knowledge base.
+```
+
+If the knowledge base feature is turned off, the response will be:
+
+```
+Knowledge base training is currently disabled.
+```
+
+## Important Notes
+
+- **Rate Limits**: Authorized users may still be subject to rate limits defined in the application. For example, the bot limits queries to 10 per 10 minutes.
+- **Message Formatting**: Ensure that your training data is clear and concise to avoid confusion during the training process.
+- **Error Handling**: If there’s an error in processing the training data, the bot will inform you with an appropriate error message.
+
+## Conclusion
+
+Using the `/learn` command is a powerful way to enhance the ReelTalkBot's knowledge and responsiveness. By adding specific information through training, users can make the bot a more effective assistant for inquiries related to fishing and aquatic life.
+
+
+
+---
+
 ## 📞 Contact
 
 For any questions or support, feel free to reach out:
