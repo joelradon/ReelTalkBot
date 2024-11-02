@@ -1,3 +1,5 @@
+// internal/app.go
+
 package internal
 
 import (
@@ -21,6 +23,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// App represents the application with all necessary configurations and clients
 type App struct {
 	TelegramToken  string
 	OpenAIKey      string
@@ -34,9 +37,12 @@ type App struct {
 	S3Region       string
 	S3Client       *s3.S3
 	UsageCache     *UsageCache
+	AIServiceURL   string // URL of the Python AI microservice
 }
 
+// NewApp initializes and returns a new App instance
 func NewApp() *App {
+	// Load environment variables from .env file, if available
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("No .env file found. Proceeding with environment variables.")
@@ -56,14 +62,17 @@ func NewApp() *App {
 		S3Endpoint:   os.Getenv("AWS_ENDPOINT_URL_S3"),
 		S3Region:     os.Getenv("AWS_REGION"),
 		UsageCache:   NewUsageCache(),
+		AIServiceURL: os.Getenv("AI_SERVICE_URL"), // Initialize AIServiceURL
 	}
 
+	// Warn if BotUsername is not set
 	if app.BotUsername == "" {
 		log.Println("Warning: BOT_USERNAME environment variable is missing. The bot will not respond to mentions.")
 	} else {
 		log.Printf("Bot username is set to: %s", app.BotUsername)
 	}
 
+	// Initialize AWS S3 client
 	sess, err := session.NewSession(&aws.Config{
 		Region:   aws.String(app.S3Region),
 		Endpoint: aws.String(app.S3Endpoint),
@@ -76,6 +85,7 @@ func NewApp() *App {
 	return app
 }
 
+// ProcessMessage handles the entire flow of processing a Telegram message
 func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion string, messageID int) error {
 	// Rate limit check
 	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
@@ -108,90 +118,53 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 		return fmt.Errorf("user rate limited")
 	}
 
+	// Track usage
 	a.UsageCache.AddUsage(userID)
 
-	// Prepare messages for OpenAI
-	messages := []OpenAIMessage{
-		{Role: "system", Content: "You are a helpful assistant."},
-		{Role: "user", Content: userQuestion},
-	}
-
-	startTime := time.Now()
-
-	responseText, err := a.QueryOpenAIWithMessagesSimple(messages)
+	// Step 1: Extract Keywords using AI microservice
+	keywords, err := a.ExtractKeywords(userID, userQuestion)
 	if err != nil {
-		log.Printf("OpenAI query failed: %v", err)
+		log.Printf("Error extracting keywords: %v", err)
+		// Notify user about the error
+		a.notifyUserError(chatID, "Sorry, I couldn't process your request at the moment.")
 		return err
 	}
 
-	responseTime := time.Since(startTime)
-	finalMessage := a.PrepareFinalMessageDetailed(responseText)
+	log.Printf("Extracted keywords: %v", keywords)
 
+	// Step 2: Generate Response using AI microservice
+	// Format keywords appropriately (e.g., space-separated or comma-separated)
+	keywordsStr := strings.Join(keywords, " ")
+	response, err := a.GenerateResponse(userID, keywordsStr)
+	if err != nil {
+		log.Printf("Error generating response: %v", err)
+		a.notifyUserError(chatID, "Sorry, I couldn't generate a response at the moment.")
+		return err
+	}
+
+	log.Printf("Generated response: %s", response)
+
+	// Summarize the response if it's too long
+	finalMessage := a.PrepareFinalMessageDetailed(response)
+
+	// Send the response back to the user
 	if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
 		log.Printf("Failed to send message to Telegram: %v", err)
 		return err
 	}
 
-	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
+	// Log the interaction in S3, tracking if the user is rate-limited
+	isRateLimited = !a.UsageCache.CanUserChat(userID)
+	a.logToS3(userID, username, userQuestion, 0, isRateLimited) // Assuming responseTime is not tracked here
 	return nil
 }
 
-// QueryOpenAIWithMessagesSimple sends a request to OpenAI with given messages and returns only the response text
-func (a *App) QueryOpenAIWithMessagesSimple(messages []OpenAIMessage) (string, error) {
-	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
-
-	query := OpenAIQuery{
-		Model:       "gpt-4o-mini",
-		Messages:    messages,
-		Temperature: 0.7,
-		MaxTokens:   500,
-	}
-
-	body, err := json.Marshal(query)
+// notifyUserError sends an error message to the user
+func (a *App) notifyUserError(chatID int64, errorMessage string) {
+	err := a.sendMessage(chatID, errorMessage, 0)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal OpenAI query: %w", err)
+		log.Printf("Failed to send error message to user: %v", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fullEndpoint, bytes.NewBuffer(body))
-	if err != nil {
-		return "", fmt.Errorf("failed to create OpenAI request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.OpenAIKey)
-
-	resp, err := a.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("error making request to OpenAI: %w", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var result OpenAIResponse
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", fmt.Errorf("error unmarshalling response: %w", err)
-	}
-
-	if len(result.Choices) > 0 {
-		content := result.Choices[0].Message.Content
-		if len(content) > 4096 {
-			content = a.SummarizeToLength(content, 4096)
-		}
-		return content, nil
-	}
-
-	return "", fmt.Errorf("no choices returned in OpenAI response")
 }
 
 // PrepareFinalMessageDetailed ensures the message fits within Telegram's character limits
@@ -245,7 +218,7 @@ func (a *App) sendMessage(chatID int64, text string, replyToMessageID int) error
 	return nil
 }
 
-// SummarizeToLength trims the text to the specified maximum length
+// SummarizeToLength trims the text to the specified maximum length.
 func (a *App) SummarizeToLength(text string, maxLength int) string {
 	if len(text) <= maxLength {
 		return text

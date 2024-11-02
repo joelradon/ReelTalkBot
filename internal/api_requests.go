@@ -12,91 +12,112 @@ import (
 	"time"
 )
 
-// OpenAIQuery represents the request payload for OpenAI API
-type OpenAIQuery struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Temperature float32         `json:"temperature,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
+// KeywordRequest represents the payload for /extract_keywords
+type KeywordRequest struct {
+	UserID  int    `json:"user_id"`
+	Message string `json:"message"`
 }
 
-// OpenAIMessage represents a message in the OpenAI chat
-type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// KeywordResponse represents the response from /extract_keywords
+type KeywordResponse struct {
+	Keywords []string `json:"keywords"`
 }
 
-// OpenAIResponse represents the response from OpenAI API
-type OpenAIResponse struct {
-	Choices []struct {
-		Index        int           `json:"index"`
-		Message      OpenAIMessage `json:"message"`
-		FinishReason string        `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+// GenerateResponseRequest represents the payload for /generate_response
+type GenerateResponseRequest struct {
+	UserID  int    `json:"user_id"`
+	Message string `json:"message"`
 }
 
-// QueryOpenAIWithMessages sends a request to OpenAI with given messages and returns response text
-func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) {
-	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
+// GenerateResponseResponse represents the response from /generate_response
+type GenerateResponseResponse struct {
+	Response string `json:"response"`
+}
 
-	query := OpenAIQuery{
-		Model:       "gpt-4o-mini", // Use the appropriate model
-		Messages:    messages,
-		Temperature: 0.7,
-		MaxTokens:   500,
+// ExtractKeywords sends a request to the /extract_keywords endpoint of the AI microservice
+func (a *App) ExtractKeywords(userID int, message string) ([]string, error) {
+	url := fmt.Sprintf("%s/extract_keywords", a.AIServiceURL)
+
+	payload := KeywordRequest{
+		UserID:  userID,
+		Message: message,
 	}
 
-	body, err := json.Marshal(query)
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal OpenAI query: %w", err)
+		return nil, fmt.Errorf("failed to marshal KeywordRequest: %w", err)
 	}
 
-	// Use context with timeout
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set a timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fullEndpoint, bytes.NewBuffer(body))
-	if err != nil {
-		return "", fmt.Errorf("failed to create OpenAI request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.OpenAIKey)
+	req = req.WithContext(ctx)
 
 	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error making request to OpenAI: %w", err)
+		return nil, fmt.Errorf("request to /extract_keywords failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error reading response body: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("non-200 response from /extract_keywords: %d - %s", resp.StatusCode, string(bodyBytes))
 	}
+
+	var keywordResp KeywordResponse
+	if err := json.NewDecoder(resp.Body).Decode(&keywordResp); err != nil {
+		return nil, fmt.Errorf("failed to decode KeywordResponse: %w", err)
+	}
+
+	return keywordResp.Keywords, nil
+}
+
+// GenerateResponse sends a request to the /generate_response endpoint of the AI microservice
+func (a *App) GenerateResponse(userID int, message string) (string, error) {
+	url := fmt.Sprintf("%s/generate_response", a.AIServiceURL)
+
+	payload := GenerateResponseRequest{
+		UserID:  userID,
+		Message: message,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal GenerateResponseRequest: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set a timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request to /generate_response failed: %w", err)
+	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("non-200 response from /generate_response: %d - %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	// Parse and handle response
-	var result OpenAIResponse
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", fmt.Errorf("error unmarshalling response: %w", err)
+	var generateResp GenerateResponseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&generateResp); err != nil {
+		return "", fmt.Errorf("failed to decode GenerateResponseResponse: %w", err)
 	}
 
-	// Extract content
-	if len(result.Choices) > 0 {
-		content := result.Choices[0].Message.Content
-		if len(content) > 4096 { // Telegram's max message length
-			content = SummarizeToLength(content, 4096)
-		}
-		return content, nil
-	}
-
-	return "", fmt.Errorf("no choices returned in OpenAI response")
+	return generateResp.Response, nil
 }

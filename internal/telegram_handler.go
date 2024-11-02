@@ -1,3 +1,5 @@
+// internal/telegram_handler.go
+
 package internal
 
 import (
@@ -7,10 +9,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// HandleTelegramMessage processes incoming Telegram messages and queries OpenAI
+// HandleTelegramMessage processes incoming Telegram messages and interacts with the AI microservice
 func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, error) {
 	var message *TelegramMessage
 	if update.Message != nil {
@@ -57,6 +58,7 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 		}
 	}
 
+	// Ignore messages in group chats unless the bot is tagged or it's a reply to the bot
 	if !isTagged && !(isReply && message.ReplyToMessage.From.IsBot) && message.Chat.Type != "private" {
 		log.Printf("Ignoring message in group chat %d: %s", chatID, userQuestion)
 		return "No response needed", nil
@@ -64,47 +66,16 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 
 	log.Printf("Processing message in chat %d: %s", chatID, userQuestion)
 
-	// Prepare messages for OpenAI
-	messages := []OpenAIMessage{
-		{Role: "system", Content: "You are a helpful assistant."},
-	}
-
-	if isReply && message.ReplyToMessage.From.IsBot {
-		previousBotMessage := message.ReplyToMessage
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: previousBotMessage.Text})
-	}
-
-	messages = append(messages, OpenAIMessage{Role: "user", Content: userQuestion})
-
-	startTime := time.Now()
-
-	// Query OpenAI API
-	responseText, err := a.QueryOpenAIWithMessagesSimple(messages)
+	// Pass the parsed update to ProcessMessage
+	err := a.ProcessMessage(chatID, userID, username, userQuestion, messageID)
 	if err != nil {
-		log.Printf("OpenAI query failed: %v", err)
 		return "", err
 	}
 
-	endTime := time.Now()
-	responseTime := endTime.Sub(startTime)
-
-	// Prepare the final message to fit within Telegram's character limit
-	finalMessage := a.PrepareFinalMessageDetailed(responseText)
-
-	// Send the response, incorporating throttling
-	if err := a.SendMessageWithThrottle(chatID, finalMessage, messageID, userID); err != nil {
-		log.Printf("Failed to send message to Telegram: %v", err)
-		return "", err
-	}
-
-	// Log the interaction in S3, tracking if the user is rate-limited
-	isRateLimited := !a.UsageCache.CanUserChat(userID)
-	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
-
-	log.Printf("Sent message to chat %d: %s", chatID, responseText)
 	return "Message processed", nil
 }
 
+// SendMessageWithThrottle sends a message to Telegram, considering rate limits
 func (a *App) SendMessageWithThrottle(chatID int64, text string, replyToMessageID int, userID int) error {
 	// Check if the user has exceeded the message limit
 	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
