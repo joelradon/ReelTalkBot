@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -41,6 +42,8 @@ type App struct {
 	NoLimitUsers        map[int]struct{} // Map of user IDs with no rate limits
 	KnowledgeBaseActive bool             // Indicates if the knowledge base is active
 	logMutex            sync.Mutex       // Mutex to ensure thread-safe logging
+	KnowledgeBaseURL    string           // URL of the Knowledge Base API
+	KnowledgeBaseAPIKey string           // API Key for authenticating with Knowledge Base
 }
 
 // NewApp initializes the App with configurations from environment variables.
@@ -77,6 +80,8 @@ func NewApp() *App {
 		UsageCache:          NewUsageCache(),
 		NoLimitUsers:        noLimitUsers,
 		KnowledgeBaseActive: knowledgeBaseActive,
+		KnowledgeBaseURL:    os.Getenv("KNOWLEDGE_BASE_TRAIN_ENDPOINT"),
+		KnowledgeBaseAPIKey: os.Getenv("API_KEY"),
 	}
 
 	if app.BotUsername == "" {
@@ -110,7 +115,13 @@ func parseNoLimitUsers(raw string) map[int]struct{} {
 	return userMap
 }
 
-// ProcessMessage processes a user's message, queries OpenAI, sends the response, and logs the interaction.
+// PrepareFinalMessage formats the response message from OpenAI for sending to Telegram.
+func (a *App) PrepareFinalMessage(responseText string) string {
+	// Implement your message preparation logic here.
+	return responseText // Example return; modify as needed.
+}
+
+// ProcessMessage processes a user's message, queries Knowledge Base or OpenAI, sends the response, and logs the interaction.
 func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion string, messageID int) error {
 	// Rate limit check
 	isNoLimitUser := false
@@ -147,7 +158,27 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	// Extract keywords from userQuestion
 	keywords := ExtractKeywords(userQuestion)
 
-	// Prepare messages for OpenAI
+	// Attempt to query Knowledge Base first
+	if a.KnowledgeBaseActive && a.KnowledgeBaseURL != "" && a.KnowledgeBaseAPIKey != "" {
+		bodyOfWater, fishSpecies, waterType := IdentifyTaxonomyCategories(userQuestion)
+		knowledgeResponse, err := a.QueryKnowledgeBase(bodyOfWater, fishSpecies, waterType, userQuestion)
+		if err != nil {
+			log.Printf("Failed to query Knowledge Base: %v", err)
+			// Fallback to OpenAI or send an error message
+		} else if knowledgeResponse != "" {
+			// Send the Knowledge Base response
+			if err := a.sendMessage(chatID, knowledgeResponse, messageID); err != nil {
+				log.Printf("Failed to send Knowledge Base message to Telegram: %v", err)
+				return err
+			}
+
+			// Log the interaction in S3
+			a.logToS3(userID, username, userQuestion, keywords, 0, isRateLimited)
+			return nil
+		}
+	}
+
+	// Fallback to OpenAI if Knowledge Base is inactive or no response
 	messages := []OpenAIMessage{
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: userQuestion},
@@ -155,14 +186,14 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 
 	startTime := time.Now()
 
-	responseText, err := a.QueryOpenAIWithMessagesSimple(messages)
+	responseText, err := a.QueryOpenAIWithMessages(messages)
 	if err != nil {
 		log.Printf("OpenAI query failed: %v", err)
 		return err
 	}
 
 	responseTime := time.Since(startTime)
-	finalMessage := a.PrepareFinalMessageDetailed(responseText)
+	finalMessage := a.PrepareFinalMessage(responseText)
 
 	if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
 		log.Printf("Failed to send message to Telegram: %v", err)
@@ -173,71 +204,172 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	return nil
 }
 
-// QueryOpenAIWithMessagesSimple sends a request to OpenAI with given messages and returns only the response text
-func (a *App) QueryOpenAIWithMessagesSimple(messages []OpenAIMessage) (string, error) {
-	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
-
-	query := OpenAIQuery{
-		Model:       "gpt-4o-mini",
-		Messages:    messages,
-		Temperature: 0.7,
-		MaxTokens:   500,
+// QueryKnowledgeBase sends a query to the Knowledge Base and retrieves the answer
+func (a *App) QueryKnowledgeBase(bodyOfWater, fishSpecies, waterType, userQuery string) (string, error) {
+	// Construct query parameters based on identified taxonomy
+	queryParams := make([]string, 0)
+	if bodyOfWater != "" {
+		queryParams = append(queryParams, "body_of_water="+url.QueryEscape(bodyOfWater))
+	}
+	if fishSpecies != "" {
+		queryParams = append(queryParams, "fish_species="+url.QueryEscape(fishSpecies))
+	}
+	if waterType != "" {
+		queryParams = append(queryParams, "water_type="+url.QueryEscape(waterType))
+	}
+	if userQuery != "" {
+		queryParams = append(queryParams, "query="+url.QueryEscape(userQuery))
 	}
 
-	body, err := json.Marshal(query)
+	queryString := strings.Join(queryParams, "&")
+	apiURL := fmt.Sprintf("https://your-knowledgebase-app.fly.dev/api/knowledge?%s", queryString) // Replace with actual URL
+
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal OpenAI query: %w", err)
+		return "", fmt.Errorf("failed to create Knowledge Base request: %w", err)
 	}
 
+	// Set API Key in headers
+	req.Header.Set("X-API-KEY", a.KnowledgeBaseAPIKey)
+
+	// Use context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fullEndpoint, bytes.NewBuffer(body))
-	if err != nil {
-		return "", fmt.Errorf("failed to create OpenAI request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.OpenAIKey)
+	req = req.WithContext(ctx)
 
 	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error making request to OpenAI: %w", err)
+		return "", fmt.Errorf("error making request to Knowledge Base: %w", err)
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error reading response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Knowledge Base returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var result OpenAIResponse
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", fmt.Errorf("error unmarshalling response: %w", err)
+	var entries []KnowledgeEntryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return "", fmt.Errorf("failed to decode Knowledge Base response: %w", err)
 	}
 
-	if len(result.Choices) > 0 {
-		content := result.Choices[0].Message.Content
-		if len(content) > 4096 {
-			content = a.SummarizeToLength(content, 4096)
-		}
-		return content, nil
+	// Process the entries to generate a response
+	if len(entries) == 0 {
+		return "", nil // No response from Knowledge Base
 	}
 
-	return "", fmt.Errorf("no choices returned in OpenAI response")
+	// For simplicity, concatenate all answers. You can enhance this logic as needed.
+	var responseBuilder strings.Builder
+	for _, entry := range entries {
+		responseBuilder.WriteString(fmt.Sprintf("- **%s**: %s\n", entry.QuestionTemplate, entry.Answer))
+	}
+
+	return responseBuilder.String(), nil
 }
 
-// PrepareFinalMessageDetailed ensures the message fits within Telegram's character limit
-func (a *App) PrepareFinalMessageDetailed(responseText string) string {
-	maxLength := 4096
-	if len(responseText) > maxLength {
-		responseText = a.SummarizeToLength(responseText, maxLength)
+// KnowledgeEntryResponse represents the structure of a Knowledge Entry from the Knowledge Base
+type KnowledgeEntryResponse struct {
+	ID               uint   `json:"id"`
+	BodyOfWater      string `json:"body_of_water"`
+	FishSpecies      string `json:"fish_species"`
+	WaterType        string `json:"water_type"`
+	QuestionTemplate string `json:"question_template"`
+	Answer           string `json:"answer"`
+}
+
+// handleCommand processes Telegram commands such as /learn.
+func (a *App) handleCommand(message *TelegramMessage, userID int, username string) (string, error) {
+	command := strings.Split(message.Text, " ")[0]
+
+	switch command {
+	case "/learn":
+		// Check if the knowledge base feature is active
+		if !a.KnowledgeBaseActive {
+			msg := "Knowledge base training is currently disabled."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Knowledge base is off", nil
+		}
+
+		// Check if the user is authorized
+		if _, ok := a.NoLimitUsers[userID]; !ok {
+			msg := "You are not authorized to train the knowledge base."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Unauthorized training attempt", nil
+		}
+
+		// Extract training data from the message
+		parts := strings.SplitN(message.Text, " ", 2)
+		if len(parts) < 2 {
+			msg := "Please provide the training data. Usage: /learn [your data]"
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Incomplete training command", nil
+		}
+		trainingData := parts[1]
+
+		// Send training data to the knowledge base microservice
+		err := a.sendTrainingData(trainingData)
+		if err != nil {
+			log.Printf("Failed to send training data: %v", err)
+			msg := "Failed to train the knowledge base. Please ensure your data is correctly formatted."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Training failed", err
+		}
+
+		msg := "Training data received and is being processed."
+		a.sendMessage(message.Chat.ID, msg, message.MessageID)
+		return "Training command processed", nil
+
+	default:
+		msg := "Unknown command."
+		a.sendMessage(message.Chat.ID, msg, message.MessageID)
+		return "Unknown command", nil
 	}
-	return responseText
+}
+
+// sendTrainingData sends training data to the knowledge base microservice.
+func (a *App) sendTrainingData(data string) error {
+	// Define the knowledge base microservice endpoint
+	trainingEndpoint := a.KnowledgeBaseURL
+	if trainingEndpoint == "" {
+		return fmt.Errorf("KNOWLEDGE_BASE_TRAIN_ENDPOINT not set")
+	}
+
+	// Prepare the payload
+	payload := map[string]string{
+		"data": data,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal training data: %w", err)
+	}
+
+	// Create a new request with API Key
+	req, err := http.NewRequest("POST", trainingEndpoint, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create training request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-KEY", a.KnowledgeBaseAPIKey)
+
+	// Use context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req = req.WithContext(ctx)
+
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send training data: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("training endpoint returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
 }
 
 // sendMessage sends a plain text message to a Telegram chat
