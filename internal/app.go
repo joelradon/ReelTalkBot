@@ -1,3 +1,5 @@
+// internal/app.go
+
 package internal
 
 import (
@@ -12,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -21,25 +24,41 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// App represents the main application with all necessary configurations and dependencies.
 type App struct {
-	TelegramToken  string
-	OpenAIKey      string
-	OpenAIEndpoint string
-	BotUsername    string
-	Cache          *Cache
-	HTTPClient     *http.Client
-	RateLimiter    *rate.Limiter
-	S3BucketName   string
-	S3Endpoint     string
-	S3Region       string
-	S3Client       *s3.S3
-	UsageCache     *UsageCache
+	TelegramToken       string
+	OpenAIKey           string
+	OpenAIEndpoint      string
+	BotUsername         string
+	Cache               *Cache
+	HTTPClient          *http.Client
+	RateLimiter         *rate.Limiter
+	S3BucketName        string
+	S3Endpoint          string
+	S3Region            string
+	S3Client            *s3.S3
+	UsageCache          *UsageCache
+	NoLimitUsers        map[int]struct{} // Map of user IDs with no rate limits
+	KnowledgeBaseActive bool             // Indicates if the knowledge base is active
+	logMutex            sync.Mutex       // Mutex to ensure thread-safe logging
 }
 
+// NewApp initializes the App with configurations from environment variables.
 func NewApp() *App {
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("No .env file found. Proceeding with environment variables.")
+	}
+
+	// Parse NO_LIMIT_USERS
+	noLimitUsersRaw := os.Getenv("NO_LIMIT_USERS")
+	noLimitUsers := parseNoLimitUsers(noLimitUsersRaw)
+
+	// Parse KNOWLEDGE_BASE (default to OFF)
+	knowledgeBaseEnv := strings.ToUpper(os.Getenv("KNOWLEDGE_BASE"))
+	knowledgeBaseActive := false
+	if knowledgeBaseEnv == "ON" {
+		knowledgeBaseActive = true
 	}
 
 	app := &App{
@@ -51,11 +70,13 @@ func NewApp() *App {
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		RateLimiter:  rate.NewLimiter(rate.Every(time.Second), 5),
-		S3BucketName: os.Getenv("BUCKET_NAME"),
-		S3Endpoint:   os.Getenv("AWS_ENDPOINT_URL_S3"),
-		S3Region:     os.Getenv("AWS_REGION"),
-		UsageCache:   NewUsageCache(),
+		RateLimiter:         rate.NewLimiter(rate.Every(time.Second), 5),
+		S3BucketName:        os.Getenv("BUCKET_NAME"),
+		S3Endpoint:          os.Getenv("AWS_ENDPOINT_URL_S3"),
+		S3Region:            os.Getenv("AWS_REGION"),
+		UsageCache:          NewUsageCache(),
+		NoLimitUsers:        noLimitUsers,
+		KnowledgeBaseActive: knowledgeBaseActive,
 	}
 
 	if app.BotUsername == "" {
@@ -76,15 +97,25 @@ func NewApp() *App {
 	return app
 }
 
+// parseNoLimitUsers parses the NO_LIMIT_USERS environment variable into a map of user IDs.
+func parseNoLimitUsers(raw string) map[int]struct{} {
+	userMap := make(map[int]struct{})
+	ids := strings.Split(raw, ",")
+	for _, idStr := range ids {
+		idStr = strings.Trim(idStr, " \"") // Remove spaces and quotes
+		if id, err := strconv.Atoi(idStr); err == nil {
+			userMap[id] = struct{}{}
+		}
+	}
+	return userMap
+}
+
+// ProcessMessage processes a user's message, queries OpenAI, sends the response, and logs the interaction.
 func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion string, messageID int) error {
 	// Rate limit check
-	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
 	isNoLimitUser := false
-	for _, id := range noLimitUsers {
-		if id == strconv.Itoa(userID) {
-			isNoLimitUser = true
-			break
-		}
+	if _, ok := a.NoLimitUsers[userID]; ok {
+		isNoLimitUser = true
 	}
 
 	isRateLimited := false
@@ -103,12 +134,18 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 			log.Printf("Failed to send rate limit message to Telegram: %v", err)
 		}
 
+		// Extract keywords from userQuestion
+		keywords := ExtractKeywords(userQuestion)
+
 		// Log the attempt to S3
-		a.logToS3(userID, username, userQuestion, 0, isRateLimited)
+		a.logToS3(userID, username, userQuestion, keywords, 0, isRateLimited)
 		return fmt.Errorf("user rate limited")
 	}
 
 	a.UsageCache.AddUsage(userID)
+
+	// Extract keywords from userQuestion
+	keywords := ExtractKeywords(userQuestion)
 
 	// Prepare messages for OpenAI
 	messages := []OpenAIMessage{
@@ -132,7 +169,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 		return err
 	}
 
-	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
+	a.logToS3(userID, username, userQuestion, keywords, responseTime, isRateLimited)
 	return nil
 }
 
@@ -194,7 +231,7 @@ func (a *App) QueryOpenAIWithMessagesSimple(messages []OpenAIMessage) (string, e
 	return "", fmt.Errorf("no choices returned in OpenAI response")
 }
 
-// PrepareFinalMessageDetailed ensures the message fits within Telegram's character limits
+// PrepareFinalMessageDetailed ensures the message fits within Telegram's character limit
 func (a *App) PrepareFinalMessageDetailed(responseText string) string {
 	maxLength := 4096
 	if len(responseText) > maxLength {
@@ -253,18 +290,19 @@ func (a *App) SummarizeToLength(text string, maxLength int) string {
 	return text[:maxLength]
 }
 
-// logToS3 logs user interactions to an S3 bucket with details about rate limiting and usage
-func (a *App) logToS3(userID int, username, userPrompt string, responseTime time.Duration, isRateLimited bool) {
-	// Retrieve usage count for the last 10 minutes
-	queryCount := len(a.UsageCache.filterRecentMessages(userID))
+// logToS3 logs user interactions to an S3 bucket with details about rate limiting and usage.
+// It appends the new log entry to the existing CSV file in S3.
+func (a *App) logToS3(userID int, username, userPrompt string, keywords []string, responseTime time.Duration, isRateLimited bool) {
+	a.logMutex.Lock()
+	defer a.logMutex.Unlock()
 
 	// Prepare the record with new fields
 	record := []string{
 		fmt.Sprintf("%d", userID),
 		username,
 		userPrompt,
+		strings.Join(keywords, " "), // Concatenate keywords
 		fmt.Sprintf("%d ms", responseTime.Milliseconds()),
-		fmt.Sprintf("%d queries in last 10 mins", queryCount),
 		fmt.Sprintf("Rate limited: %t", isRateLimited),
 	}
 
@@ -272,25 +310,49 @@ func (a *App) logToS3(userID int, username, userPrompt string, responseTime time
 	bucketName := a.S3BucketName
 	objectKey := "logs/telegram_logs.csv"
 
-	// Initialize buffer for writing CSV data
+	// Download the existing CSV from S3
+	resp, err := a.S3Client.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
+	})
+
+	var existingData [][]string
+	if err == nil {
+		defer resp.Body.Close()
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err == nil && len(bodyBytes) > 0 {
+			reader := csv.NewReader(bytes.NewReader(bodyBytes))
+			existingData, err = reader.ReadAll()
+			if err != nil {
+				log.Printf("Failed to parse existing CSV: %v", err)
+				existingData = [][]string{}
+			}
+		}
+	} else {
+		log.Printf("Failed to get existing CSV from S3: %v. A new CSV will be created.", err)
+	}
+
+	// Append the new record
+	existingData = append(existingData, record)
+
+	// Write all records to a buffer
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	if err := w.Write(record); err != nil {
-		log.Printf("Failed to write CSV data: %v", err)
+	if err := w.WriteAll(existingData); err != nil {
+		log.Printf("Failed to write CSV data to buffer: %v", err)
 		return
 	}
-	w.Flush()
 
-	// Upload the CSV log to S3
-	_, err := a.S3Client.PutObject(&s3.PutObjectInput{
+	// Upload the updated CSV back to S3
+	_, err = a.S3Client.PutObject(&s3.PutObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(objectKey),
 		Body:   bytes.NewReader(buf.Bytes()),
 	})
 
 	if err != nil {
-		log.Printf("Failed to upload log to S3: %v", err)
+		log.Printf("Failed to upload updated CSV to S3: %v", err)
 	} else {
-		log.Printf("Successfully logged data to S3")
+		log.Printf("Successfully appended log data to S3 CSV")
 	}
 }

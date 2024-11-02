@@ -1,3 +1,5 @@
+// internal/usage_cache.go
+
 package internal
 
 import (
@@ -56,7 +58,7 @@ func (u *UsageCache) TimeUntilLimitReset(userID int) time.Duration {
 	return u.duration - time.Since(oldestTime)
 }
 
-// Helper function to filter out old messages based on the duration
+// filterRecentMessages filters messages within the allowed duration
 func (u *UsageCache) filterRecentMessages(userID int) []time.Time {
 	if _, exists := u.users[userID]; !exists {
 		u.users[userID] = []time.Time{}
