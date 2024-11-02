@@ -1,3 +1,5 @@
+// internal/secrets_manager.go
+
 package internal
 
 import (
@@ -5,7 +7,7 @@ import (
 	"os"
 )
 
-// SecretsManager is responsible for managing sensitive data and secrets
+// GetSecret retrieves a secret from environment variables.
 func GetSecret(key string) (string, error) {
 	secret := os.Getenv(key)
 	if secret == "" {

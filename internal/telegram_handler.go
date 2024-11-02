@@ -1,18 +1,18 @@
+// internal/telegram_handler.go
+
 package internal
 
 import (
-	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
-	"time"
 )
 
-// HandleTelegramMessage processes incoming Telegram messages and queries OpenAI
+// HandleTelegramMessage processes incoming Telegram messages and queries OpenAI or Knowledge Base
 func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, error) {
 	var message *TelegramMessage
+
+	// Determine the type of message received
 	if update.Message != nil {
 		message = update.Message
 	} else if update.EditedMessage != nil {
@@ -28,17 +28,19 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 		return "No message to process", nil
 	}
 
+	// Validate message structure
 	if message.Chat == nil || message.Text == "" {
 		return "Invalid message structure", nil
 	}
 
+	// Extract relevant fields from the message
 	chatID := message.Chat.ID
 	userQuestion := message.Text
 	messageID := message.MessageID
 	userID := message.From.ID
 	username := message.From.Username
 
-	// Check if the message is a reply
+	// Determine if the message is a reply to another message
 	isReply := message.ReplyToMessage != nil
 
 	// Check if the bot is mentioned (tagged) in the message
@@ -57,92 +59,66 @@ func (a *App) HandleTelegramMessage(update *Update, r *http.Request) (string, er
 		}
 	}
 
+	// If the message is not a direct message, a reply to the bot, or mentions the bot, ignore it
 	if !isTagged && !(isReply && message.ReplyToMessage.From.IsBot) && message.Chat.Type != "private" {
 		log.Printf("Ignoring message in group chat %d: %s", chatID, userQuestion)
 		return "No response needed", nil
 	}
 
+	// Check if the message is a command (starts with "/")
+	if strings.HasPrefix(message.Text, "/") {
+		return a.handleCommand(message, userID, username)
+	}
+
 	log.Printf("Processing message in chat %d: %s", chatID, userQuestion)
 
-	// Prepare messages for OpenAI
-	messages := []OpenAIMessage{
-		{Role: "system", Content: "You are a helpful assistant."},
+	// Process the message: Query Knowledge Base or fallback to OpenAI
+	if err := a.ProcessMessage(chatID, userID, username, userQuestion, messageID); err != nil {
+		log.Printf("Error processing message: %v", err)
+		return "Error processing your request.", nil
 	}
 
-	if isReply && message.ReplyToMessage.From.IsBot {
-		previousBotMessage := message.ReplyToMessage
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: previousBotMessage.Text})
-	}
-
-	messages = append(messages, OpenAIMessage{Role: "user", Content: userQuestion})
-
-	startTime := time.Now()
-
-	// Query OpenAI API
-	responseText, err := a.QueryOpenAIWithMessagesSimple(messages)
-	if err != nil {
-		log.Printf("OpenAI query failed: %v", err)
-		return "", err
-	}
-
-	endTime := time.Now()
-	responseTime := endTime.Sub(startTime)
-
-	// Prepare the final message to fit within Telegram's character limit
-	finalMessage := a.PrepareFinalMessageDetailed(responseText)
-
-	// Send the response, incorporating throttling
-	if err := a.SendMessageWithThrottle(chatID, finalMessage, messageID, userID); err != nil {
-		log.Printf("Failed to send message to Telegram: %v", err)
-		return "", err
-	}
-
-	// Log the interaction in S3, tracking if the user is rate-limited
-	isRateLimited := !a.UsageCache.CanUserChat(userID)
-	a.logToS3(userID, username, userQuestion, responseTime, isRateLimited)
-
-	log.Printf("Sent message to chat %d: %s", chatID, responseText)
 	return "Message processed", nil
 }
 
-func (a *App) SendMessageWithThrottle(chatID int64, text string, replyToMessageID int, userID int) error {
-	// Check if the user has exceeded the message limit
-	noLimitUsers := strings.Split(os.Getenv("NO_LIMIT_USERS"), ",")
-	isNoLimitUser := false
-	for _, id := range noLimitUsers {
-		if id == strconv.Itoa(userID) {
-			isNoLimitUser = true
+// IdentifyTaxonomyCategories parses the user query to extract taxonomy categories.
+func IdentifyTaxonomyCategories(query string) (bodyOfWater, fishSpecies, waterType string) {
+	lowerQuery := strings.ToLower(query)
+
+	bodyOfWaterKeywords := []string{"salmon river", "lake ontario", "great lake tributaries"}
+	fishSpeciesKeywords := []string{"king salmon", "coho salmon", "steelhead", "brown trout"}
+	waterTypeKeywords := []string{"adronomous", "lentic", "lotic"}
+
+	for _, kw := range bodyOfWaterKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			bodyOfWater = kw
 			break
 		}
 	}
 
-	if !isNoLimitUser && !a.UsageCache.CanUserChat(userID) {
-		// Calculate the remaining time until limit reset
-		timeRemaining := a.UsageCache.TimeUntilLimitReset(userID)
-		minutes := int(timeRemaining.Minutes())
-		seconds := int(timeRemaining.Seconds()) % 60
-
-		// Customize the rate limit message to include time until reset
-		limitMsg := fmt.Sprintf(
-			"Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool. Please try again in %d minutes and %d seconds.",
-			minutes, seconds,
-		)
-		return a.sendMessage(chatID, limitMsg, replyToMessageID)
+	for _, kw := range fishSpeciesKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			fishSpecies = kw
+			break
+		}
 	}
 
-	// Track usage
-	a.UsageCache.AddUsage(userID)
+	for _, kw := range waterTypeKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			waterType = kw
+			break
+		}
+	}
 
-	// Proceed to send the message through Telegram API using the `sendMessage` function from `app.go`
-	return a.sendMessage(chatID, text, replyToMessageID)
+	return
 }
 
-// Helper function to check if the mention is the bot's username
+// isTaggedMention checks if the mention is the bot's username.
 func isTaggedMention(mention, botUsername string) bool {
 	return strings.ToLower(mention) == "@"+strings.ToLower(botUsername)
 }
 
-// Helper function to remove the mention from the message text
+// removeMention removes the bot's mention from the message text.
 func removeMention(text, mention string) string {
 	return strings.TrimSpace(strings.Replace(text, mention, "", 1))
 }
