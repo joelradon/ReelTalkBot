@@ -12,17 +12,20 @@ import (
 	"os/signal"
 	"time"
 
-	"ReelTalkBot-Go/internal"
+	"ReelTalkBot-Go/internal/app"
+	"ReelTalkBot-Go/internal/telegram"
+	"ReelTalkBot-Go/internal/types"
 )
 
 func main() {
-	app := internal.NewApp()
+	appInstance := app.NewApp()
+	telegramHandler := telegram.NewTelegramHandler(appInstance)
 
 	// Start server with mainHandler function for Telegram webhook
 	srv := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mainHandler(w, r, app)
+			mainHandler(w, r, telegramHandler)
 		}),
 	}
 
@@ -51,7 +54,7 @@ func main() {
 }
 
 // mainHandler processes incoming HTTP requests for the Telegram bot webhook
-func mainHandler(w http.ResponseWriter, r *http.Request, app *internal.App) {
+func mainHandler(w http.ResponseWriter, r *http.Request, th *telegram.TelegramHandler) {
 	// Log the raw body of the incoming request
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -62,7 +65,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request, app *internal.App) {
 	log.Printf("Received raw update payload: %s", string(body))
 
 	// Parse the JSON payload into an Update struct
-	var update internal.Update
+	var update types.Update
 	if err := json.Unmarshal(body, &update); err != nil {
 		log.Printf("Error unmarshalling update: %v", err)
 		http.Error(w, "cannot parse body", http.StatusBadRequest)
@@ -70,7 +73,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request, app *internal.App) {
 	}
 
 	// Pass the parsed update to HandleTelegramMessage
-	result, err := app.HandleTelegramMessage(&update, r)
+	result, err := th.HandleTelegramMessage(&update)
 	if err != nil {
 		log.Printf("Error handling message: %v", err)
 		http.Error(w, "error processing message", http.StatusInternalServerError)

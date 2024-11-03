@@ -1,23 +1,26 @@
-// internal/cache.go
+// internal/cache/cache.go
 
-package internal
+package cache
 
 import (
 	"sync"
 	"time"
 )
 
+// Cache represents a thread-safe in-memory cache.
 type Cache struct {
 	data  map[string]string
 	mutex sync.RWMutex
 }
 
+// NewCache initializes and returns a new Cache instance.
 func NewCache() *Cache {
 	return &Cache{
 		data: make(map[string]string),
 	}
 }
 
+// Get retrieves the value associated with the given key.
 func (c *Cache) Get(key string) (string, bool) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
@@ -25,6 +28,7 @@ func (c *Cache) Get(key string) (string, bool) {
 	return val, exists
 }
 
+// Set assigns a value to the given key in the cache.
 func (c *Cache) Set(key, value string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

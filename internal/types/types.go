@@ -1,6 +1,45 @@
-// internal/types.go
+// internal/types/types.go
 
-package internal
+package types
+
+// OpenAIMessage represents a message in the OpenAI chat
+type OpenAIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// OpenAIQuery represents the request payload for OpenAI API
+type OpenAIQuery struct {
+	Model       string          `json:"model"`
+	Messages    []OpenAIMessage `json:"messages"`
+	Temperature float32         `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+}
+
+// OpenAIResponse represents the response from OpenAI API
+type OpenAIResponse struct {
+	Choices []struct {
+		Index        int           `json:"index"`
+		Message      OpenAIMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+// KnowledgeEntryResponse represents the structure of a Knowledge Entry from the Knowledge Base
+type KnowledgeEntryResponse struct {
+	ID               uint   `json:"id"`
+	BodyOfWater      string `json:"body_of_water"`
+	FishSpecies      string `json:"fish_species"`
+	WaterType        string `json:"water_type"`
+	QuestionTemplate string `json:"question_template"`
+	Answer           string `json:"answer"`
+	Category         string `json:"category"` // New field for categorization
+}
 
 // Update represents an incoming Telegram update
 type Update struct {
@@ -54,4 +93,13 @@ type MessageEntity struct {
 	Offset int    `json:"offset"`
 	Length int    `json:"length"`
 	Type   string `json:"type"`
+}
+
+// QueryParameters represents the parameters for querying the Knowledge Base
+type QueryParameters struct {
+	BodyOfWater string `json:"body_of_water"`
+	FishSpecies string `json:"fish_species"`
+	WaterType   string `json:"water_type"`
+	Category    string `json:"category"`
+	Query       string `json:"query"`
 }

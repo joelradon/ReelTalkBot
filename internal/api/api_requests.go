@@ -1,6 +1,6 @@
-// internal/api_requests.go
+// internal/api/api_requests.go
 
-package internal
+package api
 
 import (
 	"bytes"
@@ -10,41 +10,34 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"ReelTalkBot-Go/internal/types"
+	"ReelTalkBot-Go/internal/utils"
 )
 
-// OpenAIQuery represents the request payload for OpenAI API
-type OpenAIQuery struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Temperature float32         `json:"temperature,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
+// APIHandler handles OpenAI API interactions
+type APIHandler struct {
+	OpenAIKey      string
+	OpenAIEndpoint string
+	Client         *http.Client
 }
 
-// OpenAIMessage represents a message in the OpenAI chat
-type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// OpenAIResponse represents the response from OpenAI API
-type OpenAIResponse struct {
-	Choices []struct {
-		Index        int           `json:"index"`
-		Message      OpenAIMessage `json:"message"`
-		FinishReason string        `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+// NewAPIHandler initializes a new APIHandler
+func NewAPIHandler(openAIKey, openAIEndpoint string) *APIHandler {
+	return &APIHandler{
+		OpenAIKey:      openAIKey,
+		OpenAIEndpoint: openAIEndpoint,
+		Client: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+	}
 }
 
 // QueryOpenAIWithMessages sends a request to OpenAI with given messages and returns response text
-func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) {
-	fullEndpoint := fmt.Sprintf("%s/chat/completions", a.OpenAIEndpoint)
+func (api *APIHandler) QueryOpenAIWithMessages(messages []types.OpenAIMessage) (string, error) {
+	fullEndpoint := fmt.Sprintf("%s/chat/completions", api.OpenAIEndpoint)
 
-	query := OpenAIQuery{
+	query := types.OpenAIQuery{
 		Model:       "gpt-4o-mini", // Use the appropriate model
 		Messages:    messages,
 		Temperature: 0.7,
@@ -66,9 +59,9 @@ func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.OpenAIKey)
+	req.Header.Set("Authorization", "Bearer "+api.OpenAIKey)
 
-	resp, err := a.HTTPClient.Do(req)
+	resp, err := api.Client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("error making request to OpenAI: %w", err)
 	}
@@ -84,7 +77,7 @@ func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) 
 	}
 
 	// Parse and handle response
-	var result OpenAIResponse
+	var result types.OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return "", fmt.Errorf("error unmarshalling response: %w", err)
 	}
@@ -93,7 +86,7 @@ func (a *App) QueryOpenAIWithMessages(messages []OpenAIMessage) (string, error) 
 	if len(result.Choices) > 0 {
 		content := result.Choices[0].Message.Content
 		if len(content) > 4096 { // Telegram's max message length
-			content = SummarizeToLength(content, 4096)
+			content = utils.SummarizeToLength(content, 4096)
 		}
 		return content, nil
 	}
