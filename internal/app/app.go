@@ -48,12 +48,14 @@ type App struct {
 	UsageCache           *usage.UsageCache
 	NoLimitUsers         map[int]struct{}                // Map of user IDs with no rate limits
 	KnowledgeBaseActive  bool                            // Indicates if the knowledge base is active
+	isKnowledgeBaseDown  bool                            // Flag to indicate if Knowledge Base is down
 	logMutex             sync.Mutex                      // Mutex to ensure thread-safe logging
 	KnowledgeBaseURL     string                          // URL of the Knowledge Base API
 	KnowledgeBaseAPIKey  string                          // API Key for authenticating with Knowledge Base
 	ConversationContexts *conversation.ConversationCache // Cache for maintaining conversation contexts
 	KnowledgeBaseClient  *knowledgebase.KnowledgeBaseClient
-	APIHandler           *api.APIHandler // Added APIHandler
+	APIHandler           *api.APIHandler   // APIHandler for OpenAI interactions
+	promptMap            map[string]string // Mapping of callback_data to prompts
 }
 
 // NewApp initializes the App with configurations from environment variables.
@@ -89,14 +91,12 @@ func NewApp() *App {
 	apiHandler := api.NewAPIHandler(os.Getenv("OPENAI_KEY"), os.Getenv("OPENAI_ENDPOINT"))
 
 	app := &App{
-		TelegramToken:  os.Getenv("TELEGRAM_TOKEN"),
-		OpenAIKey:      os.Getenv("OPENAI_KEY"),
-		OpenAIEndpoint: os.Getenv("OPENAI_ENDPOINT"),
-		BotUsername:    os.Getenv("BOT_USERNAME"),
-		Cache:          cache.NewCache(),
-		HTTPClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		TelegramToken:        os.Getenv("TELEGRAM_TOKEN"),
+		OpenAIKey:            os.Getenv("OPENAI_KEY"),
+		OpenAIEndpoint:       os.Getenv("OPENAI_ENDPOINT"),
+		BotUsername:          os.Getenv("BOT_USERNAME"),
+		Cache:                cache.NewCache(),
+		HTTPClient:           &http.Client{Timeout: 15 * time.Second},
 		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), 5),
 		S3BucketName:         os.Getenv("BUCKET_NAME"),
 		S3Endpoint:           os.Getenv("AWS_ENDPOINT_URL_S3"),
@@ -105,10 +105,12 @@ func NewApp() *App {
 		UsageCache:           usage.NewUsageCache(),
 		NoLimitUsers:         noLimitUsers,
 		KnowledgeBaseActive:  knowledgeBaseActive,
+		isKnowledgeBaseDown:  false, // Initialize as not down
 		KnowledgeBaseURL:     os.Getenv("KNOWLEDGE_BASE_TRAIN_ENDPOINT"),
 		KnowledgeBaseAPIKey:  os.Getenv("API_KEY"),
 		ConversationContexts: conversation.NewConversationCache(),
 		APIHandler:           apiHandler, // Initialize APIHandler
+		promptMap:            make(map[string]string),
 	}
 
 	if app.BotUsername == "" {
@@ -121,6 +123,9 @@ func NewApp() *App {
 	if app.KnowledgeBaseActive && app.KnowledgeBaseURL != "" && app.KnowledgeBaseAPIKey != "" {
 		app.KnowledgeBaseClient = knowledgebase.NewKnowledgeBaseClient(app.KnowledgeBaseURL, app.KnowledgeBaseAPIKey)
 	}
+
+	// Start Health Check Routine
+	app.StartHealthCheckRoutine(30 * time.Second)
 
 	return app
 }
@@ -138,10 +143,20 @@ func parseNoLimitUsers(raw string) map[int]struct{} {
 	return userMap
 }
 
-// PrepareFinalMessage formats the response message from OpenAI for sending to Telegram.
-func (a *App) PrepareFinalMessage(responseText string) string {
-	// Implement your message preparation logic here.
-	return responseText // Example return; modify as needed.
+// PrepareFinalMessage formats the response message from OpenAI or Knowledge Base for sending to Telegram.
+// Now includes KB number, category, and taxonomy information if available, and appends a quick "Need Help?" link.
+func (a *App) PrepareFinalMessage(responseText string, kbEntry *types.KnowledgeEntryResponse) string {
+	// Append KB number, category, and taxonomy information if available
+	finalMessage := responseText
+	if kbEntry != nil {
+		finalMessage += fmt.Sprintf("\n\n**KB Number:** %d\n**Category:** %s\n**Taxonomy:** %s",
+			kbEntry.KBNumber, kbEntry.Category, kbEntry.SubCategory)
+	}
+
+	// Append quick help link
+	finalMessage += "\n\nNeed Help? Type /help to see how to use this bot effectively."
+
+	return finalMessage // Example return; modify as needed.
 }
 
 // ProcessMessage processes a user's message, queries Knowledge Base or OpenAI, sends the response, and logs the interaction.
@@ -207,9 +222,10 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 
 	// Query Knowledge Base first
 	var knowledgeResponse string
-	if a.KnowledgeBaseActive && a.KnowledgeBaseClient != nil {
+	var kbEntry *types.KnowledgeEntryResponse
+	if a.KnowledgeBaseActive && a.KnowledgeBaseClient != nil && !a.isKnowledgeBaseDown {
 		bodyOfWater, fishSpecies, waterType, category := utils.IdentifyTaxonomyCategories(userQuestion)
-		entries, err := a.KnowledgeBaseClient.GetKnowledgeEntries(types.QueryParameters{
+		entries, err := a.KnowledgeBaseClient.GetKnowledgeEntries(context.Background(), types.QueryParameters{
 			BodyOfWater: bodyOfWater,
 			FishSpecies: fishSpecies,
 			WaterType:   waterType,
@@ -218,6 +234,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 		})
 		if err != nil {
 			log.Printf("Knowledge Base query failed: %v", err)
+			a.isKnowledgeBaseDown = true // Mark KB as down
 			// Fallback to OpenAI if Knowledge Base fails
 			responseText, err := a.APIHandler.QueryOpenAIWithMessages(messages)
 			if err != nil {
@@ -226,7 +243,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 			}
 
 			responseTime := 0 // Response time not measured for fallback
-			finalMessage := a.PrepareFinalMessage(responseText)
+			finalMessage := a.PrepareFinalMessage(responseText, nil)
 
 			// Append assistant's response to messages
 			messages = append(messages, types.OpenAIMessage{Role: "assistant", Content: responseText})
@@ -246,23 +263,29 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 		}
 
 		if len(entries) > 0 {
-			// Build knowledge response
-			var responseBuilder strings.Builder
-			currentCategory := ""
-			for _, entry := range entries {
-				if entry.Category != currentCategory {
-					currentCategory = entry.Category
-					responseBuilder.WriteString(fmt.Sprintf("\n### %s\n", currentCategory))
-				}
-				responseBuilder.WriteString(fmt.Sprintf("- **%s**: %s\n", entry.QuestionTemplate, entry.Answer))
+			// Assuming the first entry is the most relevant
+			kbEntry = &types.KnowledgeEntryResponse{
+				ID:                entries[0].ID,
+				KBNumber:          entries[0].KBNumber,
+				BodyOfWater:       entries[0].BodyOfWater,
+				FishSpecies:       entries[0].FishSpecies,
+				WaterType:         entries[0].WaterType,
+				QuestionTemplate:  entries[0].QuestionTemplate,
+				Answer:            entries[0].Answer,
+				Category:          entries[0].Category,
+				SubCategory:       entries[0].SubCategory,
+				HelpfulRatings:    entries[0].HelpfulRatings,
+				NotHelpfulRatings: entries[0].NotHelpfulRatings,
 			}
-			knowledgeResponse = responseBuilder.String()
+
+			knowledgeResponse = fmt.Sprintf("- **%s**: %s\n", kbEntry.QuestionTemplate, kbEntry.Answer)
 
 			// Append assistant's response to messages
 			messages = append(messages, types.OpenAIMessage{Role: "assistant", Content: knowledgeResponse})
 
-			// Send the Knowledge Base response
-			if err := a.sendMessage(chatID, knowledgeResponse, messageID); err != nil {
+			// Send the Knowledge Base response with KB details
+			finalMessage := a.PrepareFinalMessage(knowledgeResponse, kbEntry)
+			if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
 				log.Printf("Failed to send Knowledge Base message to Telegram: %v", err)
 				return err
 			}
@@ -277,7 +300,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 		}
 	}
 
-	// Fallback to OpenAI if Knowledge Base is inactive or no response
+	// Fallback to OpenAI if Knowledge Base is inactive, down, or no response
 	startTime := time.Now()
 
 	responseText, err := a.APIHandler.QueryOpenAIWithMessages(messages)
@@ -287,7 +310,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	}
 
 	responseTime := time.Since(startTime).Milliseconds()
-	finalMessage := a.PrepareFinalMessage(responseText)
+	finalMessage := a.PrepareFinalMessage(responseText, nil)
 
 	// Append assistant's response to messages
 	messages = append(messages, types.OpenAIMessage{Role: "assistant", Content: responseText})
@@ -306,9 +329,10 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	return nil
 }
 
-// HandleCommand processes Telegram commands such as /learn.
+// HandleCommand processes Telegram commands such as /learn, /rate, and /help.
 func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username string) (string, error) {
-	command := strings.SplitN(message.Text, " ", 2)[0]
+	commandParts := strings.SplitN(message.Text, " ", 2)
+	command := commandParts[0]
 
 	switch command {
 	case "/learn":
@@ -327,13 +351,12 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		}
 
 		// Extract training data from the message
-		parts := strings.SplitN(message.Text, " ", 2)
-		if len(parts) < 2 {
+		if len(commandParts) < 2 {
 			msg := "Please provide the training data.\nUsage: /learn [Category]: [SubCategory]: [Your Information]\n\nExample: /learn Gear Selection: Fly Fishing: Information about choosing the right fly fishing gear."
 			a.sendMessage(message.Chat.ID, msg, message.MessageID)
 			return "Incomplete training command", nil
 		}
-		trainingData := parts[1]
+		trainingData := commandParts[1]
 
 		// Validate and parse training data
 		category, err := a.parseTrainingData(trainingData)
@@ -364,10 +387,196 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		a.sendMessage(message.Chat.ID, msg, message.MessageID)
 		return "Training command processed", nil
 
+	case "/rate":
+		// Handle rating of KB articles
+		if len(commandParts) < 2 {
+			msg := "Please provide the KB number and your rating.\nUsage: /rate [KB Number] [Helpful/Not Helpful]\n\nExample: /rate 123 Helpful"
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Incomplete rating command", nil
+		}
+		ratingData := commandParts[1]
+		parts := strings.SplitN(ratingData, " ", 2)
+		if len(parts) < 2 {
+			msg := "Invalid rating format.\nUsage: /rate [KB Number] [Helpful/Not Helpful]"
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Invalid rating format", nil
+		}
+		kbNumberStr := parts[0]
+		rating := strings.ToLower(strings.TrimSpace(parts[1]))
+		kbNumber, err := strconv.Atoi(kbNumberStr)
+		if err != nil {
+			msg := "KB Number must be a valid integer."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Invalid KB Number", err
+		}
+		if rating != "helpful" && rating != "not helpful" {
+			msg := "Rating must be either 'Helpful' or 'Not Helpful'."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			return "Invalid rating value", fmt.Errorf("invalid rating value")
+		}
+
+		// Update the KB entry with the rating
+		err = a.KnowledgeBaseClient.UpdateKnowledgeEntryRating(kbNumber, strings.Title(rating))
+		if err != nil {
+			log.Printf("Failed to update KB entry rating: %v", err)
+			msg := "Failed to update your rating. Please try again later."
+			a.sendMessage(message.Chat.ID, msg, message.MessageID)
+			// Send error message to user if they are in NoLimitUsers
+			if _, isNoLimitUser := a.NoLimitUsers[userID]; isNoLimitUser {
+				a.sendMessage(message.Chat.ID, "An error occurred while processing your rating.", message.MessageID)
+			}
+			return "Rating failed", err
+		}
+
+		msg := "Thank you for your feedback!"
+		a.sendMessage(message.Chat.ID, msg, message.MessageID)
+		return "Rating processed", nil
+
+	case "/help", "/help@ReelTalkBot": // Added handling for /help@ReelTalkBot
+		// Handle /help command to provide detailed usage instructions and example prompts
+		helpMessage := "**ReelTalkBot Help**\n\n" +
+			"Welcome to ReelTalkBot! Here's how you can use this bot effectively for your fishing research:\n\n" +
+			"1. **/learn [Category]: [SubCategory]: [Your Information]**\n" +
+			"   - Train the bot's Knowledge Base with new information.\n" +
+			"   - **Example:** `/learn Techniques: Fly Fishing: Information about choosing the right fly fishing gear.`\n\n" +
+			"2. **/rate [KB Number] [Helpful/Not Helpful]**\n" +
+			"   - Provide feedback on Knowledge Base articles to help improve accuracy.\n" +
+			"   - **Example:** `/rate 123 Helpful`\n\n" +
+			"3. **Effective AI Prompts:**\n" +
+			"   - Use well-structured prompts to get detailed and accurate responses.\n\n" +
+			"   **Really Good Prompts:**\n" +
+			"- \"How do I fish a live shrimp on a free line near mangroves in the Indian River Lagoon. What are some the advantages and disadvantages?\"\n" +
+			"- \"What are the rules according to DEC for Upper Fly Zone in Altmar. Please list regulations with link to DEC website\"\n" +
+			"- \"What considerations should I make when choosing nymph size and color when fishing small rivers in the Appalachian Mountains? I will be fishing specifically for rainbow trout\"\n\n" +
+			"   **Medium Quality Prompts:**\n" +
+			"- \"How do I freeline a live shrimp for redfish?\"\n" +
+			"- \"What are some of the regulations for Salmon River in NY?\"\n" +
+			"- \"What should throw when nymphing for rainbow trout?\"\n\n" +
+			"   **Poor Prompts:**\n" +
+			"- \"How do I fish shrimp?\"\n" +
+			"- \"What are the rules for fishing in NY?\"\n" +
+			"- \"What nymph color should I pick?\"\n\n" +
+			"*Click on the buttons below to use these example prompts:*"
+
+		// Define example prompts with concise callback_data identifiers
+		examplePrompts := []struct {
+			Label      string
+			Prompt     string
+			CallbackID string
+		}{
+			{"Excellent Prompt - How do I fish free lined shrimp in the Indian River Lagoon", "How do I fish a live shrimp on a free line near mangroves in the Indian River Lagoon. What are some the advantages and disadvantages?", "prompt_1"},
+			{"Excellent Prompt - Give me regulations for Altmar fly fishing area on the Salmon River", "What are the rules according to DEC for Upper Fly Zone in Altmar. Please list regulations with link to DEC website", "prompt_2"},
+			{"Excellent Prompt - What size and color nymph should I use for rainbow trout in Applachian Mountains", "What considerations should I make when choosing nymph size and color when fishing small rivers in the Appalachian Mountains? I will be fishing specifically for rainbow trout", "prompt_3"},
+		}
+
+		// Populate promptMap with callback_id to prompt mapping
+		for _, prompt := range examplePrompts {
+			a.promptMap[prompt.CallbackID] = prompt.Prompt
+		}
+
+		// Construct inline keyboard buttons with concise callback_data
+		var inlineKeyboard [][]map[string]string
+		for _, prompt := range examplePrompts {
+			button := map[string]string{
+				"text":          prompt.Label,
+				"callback_data": prompt.CallbackID, // Use concise identifier
+			}
+			inlineKeyboard = append(inlineKeyboard, []map[string]string{button})
+		}
+
+		// Marshal the inline keyboard to JSON
+		keyboard := map[string]interface{}{
+			"inline_keyboard": inlineKeyboard,
+		}
+		keyboardJSON, err := json.Marshal(keyboard)
+		if err != nil {
+			log.Printf("Failed to marshal inline keyboard: %v", err)
+			a.sendMessage(message.Chat.ID, "Failed to create help menu.", message.MessageID)
+			return "Help command failed", err
+		}
+
+		// Append buttons to the help message
+		helpMessage += "\n\n"
+
+		// Send the help message with inline buttons
+		if err := a.sendMessageWithKeyboard(message.Chat.ID, helpMessage, message.MessageID, string(keyboardJSON)); err != nil {
+			log.Printf("Failed to send help message: %v", err)
+			return "Help command failed", err
+		}
+
+		return "Help command processed", nil
+
 	default:
 		msg := "Unknown command."
 		a.sendMessage(message.Chat.ID, msg, message.MessageID)
 		return "Unknown command", nil
+	}
+}
+
+// HandleCallbackQuery handles callback queries from inline keyboard buttons.
+func (a *App) HandleCallbackQuery(callbackQuery *types.TelegramCallbackQuery) error {
+	data := callbackQuery.Data
+	chatID := callbackQuery.Message.Chat.ID
+	messageID := callbackQuery.Message.MessageID
+
+	// Retrieve the corresponding prompt using callback_data identifier
+	prompt, exists := a.promptMap[data]
+	if !exists {
+		log.Printf("Received unknown callback_data: %s", data)
+		// Optionally, send a message indicating the action is not recognized
+		a.sendMessage(chatID, "Sorry, I didn't recognize that action.", messageID)
+		return fmt.Errorf("unknown callback_data: %s", data)
+	}
+
+	// Acknowledge the callback to remove the loading state
+	a.acknowledgeCallback(callbackQuery.ID)
+
+	// Process the prompt as if the user sent it as a message
+	userID := callbackQuery.From.ID
+	username := callbackQuery.From.Username
+
+	err := a.ProcessMessage(chatID, userID, username, prompt, messageID)
+	if err != nil {
+		log.Printf("Failed to process callback query: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// acknowledgeCallback sends an acknowledgment to Telegram to remove the loading state on the button.
+func (a *App) acknowledgeCallback(callbackID string) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", a.TelegramToken)
+	payload := map[string]string{
+		"callback_query_id": callbackID,
+	}
+
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal callback acknowledgment: %v", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		log.Printf("Failed to create callback acknowledgment request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		log.Printf("Failed to send callback acknowledgment: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("Callback acknowledgment returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 }
 
@@ -437,7 +646,7 @@ func (a *App) sendTrainingData(data string) error {
 	return nil
 }
 
-// sendMessage sends a plain text message to a Telegram chat
+// sendMessage sends a plain text message to a Telegram chat without any keyboard.
 func (a *App) sendMessage(chatID int64, text string, replyToMessageID int) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", a.TelegramToken)
 	payload := map[string]interface{}{
@@ -479,16 +688,51 @@ func (a *App) sendMessage(chatID int64, text string, replyToMessageID int) error
 	return nil
 }
 
-// SummarizeToLength trims the text to the specified maximum length
-func (a *App) SummarizeToLength(text string, maxLength int) string {
-	if len(text) <= maxLength {
-		return text
+// sendMessageWithKeyboard sends a message with an inline keyboard to a Telegram chat.
+func (a *App) sendMessageWithKeyboard(chatID int64, text string, replyToMessageID int, keyboard string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", a.TelegramToken)
+	payload := map[string]interface{}{
+		"chat_id":                  chatID,
+		"text":                     text,
+		"disable_web_page_preview": true,
+		"parse_mode":               "Markdown",
+		"reply_markup":             keyboard,
 	}
-	return text[:maxLength]
+
+	if replyToMessageID != 0 {
+		payload["reply_to_message_id"] = replyToMessageID
+	}
+
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status: %s - %s", resp.Status, string(bodyBytes))
+	}
+
+	return nil
 }
 
 // logToS3 logs user interactions to an S3 bucket with details about rate limiting and usage.
-// Added columns for keyword summary and categories.
+// Added columns for keyword summary, categories, response time, and ratings.
 func (a *App) logToS3(userID int, username, userPrompt string, keywords []string, keywordSummary, categories, responseTime string, isRateLimited bool) {
 	a.logMutex.Lock()
 	defer a.logMutex.Unlock()
@@ -568,5 +812,78 @@ func (a *App) logToS3(userID int, username, userPrompt string, keywords []string
 		log.Printf("Failed to upload updated CSV to S3: %v", err)
 	} else {
 		log.Printf("Successfully appended log data to S3 CSV")
+	}
+}
+
+// HealthCheck verifies if the Knowledge Base is reachable.
+func (a *App) HealthCheck() {
+	if !a.KnowledgeBaseActive || a.KnowledgeBaseClient == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Attempt to fetch a known KB entry or perform a lightweight request
+	_, err := a.KnowledgeBaseClient.GetKnowledgeEntries(ctx, types.QueryParameters{
+		Query: "health_check",
+	})
+
+	if err != nil {
+		if !a.isKnowledgeBaseDown {
+			log.Printf("Knowledge Base is down: %v", err)
+		}
+		a.isKnowledgeBaseDown = true
+	} else {
+		if a.isKnowledgeBaseDown {
+			log.Println("Knowledge Base is back online.")
+		}
+		a.isKnowledgeBaseDown = false
+	}
+}
+
+// StartHealthCheckRoutine starts a goroutine to periodically check the Knowledge Base's health.
+func (a *App) StartHealthCheckRoutine(interval time.Duration) {
+	go func() {
+		for {
+			a.HealthCheck()
+			time.Sleep(interval)
+		}
+	}()
+}
+
+// HandleUpdate processes incoming Telegram updates (messages and callback queries).
+func (a *App) HandleUpdate(update *types.TelegramUpdate) {
+	if update.CallbackQuery != nil {
+		// Handle callback queries
+		err := a.HandleCallbackQuery(update.CallbackQuery)
+		if err != nil {
+			log.Printf("Error handling callback query: %v", err)
+		}
+		return
+	}
+
+	if update.Message == nil {
+		return
+	}
+
+	message := update.Message
+	userID := message.From.ID
+	username := message.From.Username
+
+	// Check if the message is a command
+	if len(message.Entities) > 0 && message.Entities[0].Type == "bot_command" {
+		// Handle command
+		_, err := a.HandleCommand(message, userID, username)
+		if err != nil {
+			log.Printf("Error handling command: %v", err)
+		}
+		return
+	}
+
+	// Handle regular messages
+	err := a.ProcessMessage(message.Chat.ID, userID, username, message.Text, message.MessageID)
+	if err != nil {
+		log.Printf("Error processing message: %v", err)
 	}
 }

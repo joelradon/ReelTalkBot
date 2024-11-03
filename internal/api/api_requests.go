@@ -38,10 +38,10 @@ func (api *APIHandler) QueryOpenAIWithMessages(messages []types.OpenAIMessage) (
 	fullEndpoint := fmt.Sprintf("%s/chat/completions", api.OpenAIEndpoint)
 
 	query := types.OpenAIQuery{
-		Model:       "gpt-4o-mini", // Use the appropriate model
+		Model:       "gpt-4o-mini", // Corrected model name
 		Messages:    messages,
 		Temperature: 0.7,
-		MaxTokens:   500,
+		MaxTokens:   4096, // Increased character limit
 	}
 
 	body, err := json.Marshal(query)

@@ -23,7 +23,7 @@ func NewTelegramHandler(app *app.App) *TelegramHandler {
 }
 
 // HandleTelegramMessage processes incoming Telegram messages and queries OpenAI or Knowledge Base
-func (th *TelegramHandler) HandleTelegramMessage(update *types.Update) (string, error) {
+func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (string, error) {
 	var message *types.TelegramMessage
 
 	// Determine the type of message received
@@ -43,7 +43,7 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.Update) (string, 
 	}
 
 	// Validate message structure
-	if message.Chat == nil || message.Text == "" {
+	if message.Chat.ID == 0 || message.Text == "" {
 		return "Invalid message structure", nil
 	}
 
@@ -59,9 +59,12 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.Update) (string, 
 
 	// Check if the bot is mentioned (tagged) in the message
 	isTagged := false
-	if message.Entities != nil {
+	if len(message.Entities) > 0 {
 		for _, entity := range message.Entities {
 			if entity.Type == "mention" {
+				if entity.Offset+entity.Length > len(message.Text) {
+					continue // Prevent out-of-range slicing
+				}
 				mention := message.Text[entity.Offset : entity.Offset+entity.Length]
 				log.Printf("Detected mention: %s", mention)
 				if isTaggedMention(mention, th.App.BotUsername) {
