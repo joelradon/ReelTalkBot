@@ -1,12 +1,13 @@
-// internal/usage_cache.go
+// internal/usage/usage_cache.go
 
-package internal
+package usage
 
 import (
 	"sync"
 	"time"
 )
 
+// UsageCache tracks user message usage for rate limiting.
 type UsageCache struct {
 	users    map[int][]time.Time
 	mutex    sync.Mutex
@@ -14,11 +15,12 @@ type UsageCache struct {
 	duration time.Duration
 }
 
+// NewUsageCache initializes a new UsageCache.
 func NewUsageCache() *UsageCache {
 	return &UsageCache{
 		users:    make(map[int][]time.Time),
-		limit:    10, // Default limit of 10 messages per duration
-		duration: 10 * time.Minute,
+		limit:    10,               // Default limit of 10 messages per duration
+		duration: 10 * time.Minute, // 10-minute window
 	}
 }
 

@@ -1,6 +1,6 @@
-// internal/secrets_manager.go
+// internal/secrets/secrets_manager.go
 
-package internal
+package secrets
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 func GetSecret(key string) (string, error) {
 	secret := os.Getenv(key)
 	if secret == "" {
-		return "", fmt.Errorf("required environment variable not set")
+		return "", fmt.Errorf("required environment variable %s not set", key)
 	}
 	return secret, nil
 }

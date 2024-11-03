@@ -1,6 +1,6 @@
-// internal/s3_client.go
+// internal/s3/s3_client.go
 
-package internal
+package s3client
 
 import (
 	"os"
