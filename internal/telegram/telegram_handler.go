@@ -6,23 +6,23 @@ import (
 	"log"
 	"strings"
 
-	"ReelTalkBot-Go/internal/app"
+	"ReelTalkBot-Go/internal/handlers"
 	"ReelTalkBot-Go/internal/types"
 )
 
-// TelegramHandler handles Telegram message processing
+// TelegramHandler processes Telegram messages using a MessageProcessor interface.
 type TelegramHandler struct {
-	App *app.App
+	Processor handlers.MessageProcessor
 }
 
-// NewTelegramHandler initializes a new TelegramHandler
-func NewTelegramHandler(app *app.App) *TelegramHandler {
+// NewTelegramHandler initializes a new TelegramHandler with the provided MessageProcessor.
+func NewTelegramHandler(processor handlers.MessageProcessor) *TelegramHandler {
 	return &TelegramHandler{
-		App: app,
+		Processor: processor,
 	}
 }
 
-// HandleTelegramMessage processes incoming Telegram messages and queries OpenAI or Knowledge Base
+// HandleTelegramMessage processes incoming Telegram messages and queries OpenAI or Knowledge Base.
 func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (string, error) {
 	var message *types.TelegramMessage
 
@@ -36,15 +36,16 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (
 	} else if update.CallbackQuery != nil {
 		// Handle callback queries separately if needed
 		log.Printf("Received callback query: %+v", update.CallbackQuery)
-		return "Callback query received", nil
+		return "", nil // Return empty string to avoid sending a message
 	} else {
 		log.Printf("No message to process. Received update payload: %+v", update)
-		return "No message to process", nil
+		return "", nil // Return empty string to avoid sending a message
 	}
 
 	// Validate message structure
 	if message.Chat.ID == 0 || message.Text == "" {
-		return "Invalid message structure", nil
+		log.Println("Invalid message structure: missing chat ID or text.")
+		return "", nil // Return empty string to avoid sending a message
 	}
 
 	// Extract relevant fields from the message
@@ -54,8 +55,24 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (
 	userID := message.From.ID
 	username := message.From.Username
 
+	log.Printf("Received message from user %d (%s) in chat %d: %s", userID, username, chatID, userQuestion)
+
+	// Check if the message is a command (starts with "/")
+	if strings.HasPrefix(message.Text, "/") {
+		log.Printf("Message is a command: %s", message.Text)
+		_, err := th.Processor.HandleCommand(message, userID, username)
+		if err != nil {
+			log.Printf("Error handling command: %v", err)
+			return "", nil // Return empty string to avoid sending a message
+		}
+		return "", nil // Return empty string to avoid sending a message
+	}
+
 	// Determine if the message is a reply to another message
 	isReply := message.ReplyToMessage != nil
+	if isReply {
+		log.Printf("Message is a reply to message ID %d from user %d", message.ReplyToMessage.MessageID, message.ReplyToMessage.From.ID)
+	}
 
 	// Check if the bot is mentioned (tagged) in the message
 	isTagged := false
@@ -63,13 +80,15 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (
 		for _, entity := range message.Entities {
 			if entity.Type == "mention" {
 				if entity.Offset+entity.Length > len(message.Text) {
+					log.Println("Mention entity exceeds message length. Skipping.")
 					continue // Prevent out-of-range slicing
 				}
 				mention := message.Text[entity.Offset : entity.Offset+entity.Length]
 				log.Printf("Detected mention: %s", mention)
-				if isTaggedMention(mention, th.App.BotUsername) {
+				if isTaggedMention(mention, th.Processor.GetBotUsername()) {
 					isTagged = true
 					userQuestion = removeMention(userQuestion, mention)
+					log.Printf("Message is tagged with bot username: %s", th.Processor.GetBotUsername())
 					break
 				}
 			}
@@ -79,23 +98,18 @@ func (th *TelegramHandler) HandleTelegramMessage(update *types.TelegramUpdate) (
 	// If the message is not a direct message, a reply to the bot, or mentions the bot, ignore it
 	if !isTagged && !(isReply && message.ReplyToMessage.From.IsBot) && message.Chat.Type != "private" {
 		log.Printf("Ignoring message in group chat %d: %s", chatID, userQuestion)
-		return "No response needed", nil
-	}
-
-	// Check if the message is a command (starts with "/")
-	if strings.HasPrefix(message.Text, "/") {
-		return th.App.HandleCommand(message, userID, username)
+		return "", nil // Return empty string to avoid sending a message
 	}
 
 	log.Printf("Processing message in chat %d: %s", chatID, userQuestion)
 
 	// Process the message: Query Knowledge Base or fallback to OpenAI
-	if err := th.App.ProcessMessage(chatID, userID, username, userQuestion, messageID); err != nil {
+	if err := th.Processor.ProcessMessage(chatID, userID, username, userQuestion, messageID); err != nil {
 		log.Printf("Error processing message: %v", err)
-		return "Error processing your request.", nil
+		return "", nil // Return empty string to avoid sending a message
 	}
 
-	return "Message processed", nil
+	return "", nil // Return empty string to avoid sending a message
 }
 
 // isTaggedMention checks if the mention is the bot's username.

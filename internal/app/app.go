@@ -20,7 +20,9 @@ import (
 	"ReelTalkBot-Go/internal/api"
 	"ReelTalkBot-Go/internal/cache"
 	"ReelTalkBot-Go/internal/conversation"
+	"ReelTalkBot-Go/internal/handlers"
 	"ReelTalkBot-Go/internal/knowledgebase"
+	"ReelTalkBot-Go/internal/telegram"
 	"ReelTalkBot-Go/internal/types"
 	"ReelTalkBot-Go/internal/usage"
 	"ReelTalkBot-Go/internal/utils"
@@ -31,6 +33,9 @@ import (
 	"github.com/joho/godotenv"
 	"golang.org/x/time/rate"
 )
+
+// Ensure App implements handlers.MessageProcessor
+var _ handlers.MessageProcessor = (*App)(nil)
 
 // App represents the main application with all necessary configurations and dependencies.
 type App struct {
@@ -54,12 +59,14 @@ type App struct {
 	KnowledgeBaseAPIKey  string                          // API Key for authenticating with Knowledge Base
 	ConversationContexts *conversation.ConversationCache // Cache for maintaining conversation contexts
 	KnowledgeBaseClient  *knowledgebase.KnowledgeBaseClient
-	APIHandler           *api.APIHandler   // APIHandler for OpenAI interactions
-	promptMap            map[string]string // Mapping of callback_data to prompts
+	APIHandler           *api.APIHandler           // APIHandler for OpenAI interactions
+	promptMap            map[string]string         // Mapping of callback_data to prompts
+	TelegramHandler      *telegram.TelegramHandler // TelegramHandler for message processing
 }
 
 // NewApp initializes the App with configurations from environment variables.
 func NewApp() *App {
+	// Load environment variables from .env file if present
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("No .env file found. Proceeding with environment variables.")
@@ -124,6 +131,9 @@ func NewApp() *App {
 		app.KnowledgeBaseClient = knowledgebase.NewKnowledgeBaseClient(app.KnowledgeBaseURL, app.KnowledgeBaseAPIKey)
 	}
 
+	// Initialize TelegramHandler with the App as the MessageProcessor
+	app.TelegramHandler = telegram.NewTelegramHandler(app)
+
 	// Start Health Check Routine
 	app.StartHealthCheckRoutine(30 * time.Second)
 
@@ -141,22 +151,6 @@ func parseNoLimitUsers(raw string) map[int]struct{} {
 		}
 	}
 	return userMap
-}
-
-// PrepareFinalMessage formats the response message from OpenAI or Knowledge Base for sending to Telegram.
-// Now includes KB number, category, and taxonomy information if available, and appends a quick "Need Help?" link.
-func (a *App) PrepareFinalMessage(responseText string, kbEntry *types.KnowledgeEntryResponse) string {
-	// Append KB number, category, and taxonomy information if available
-	finalMessage := responseText
-	if kbEntry != nil {
-		finalMessage += fmt.Sprintf("\n\n**KB Number:** %d\n**Category:** %s\n**Taxonomy:** %s",
-			kbEntry.KBNumber, kbEntry.Category, kbEntry.SubCategory)
-	}
-
-	// Append quick help link
-	finalMessage += "\n\nNeed Help? Type /help to see how to use this bot effectively."
-
-	return finalMessage // Example return; modify as needed.
 }
 
 // ProcessMessage processes a user's message, queries Knowledge Base or OpenAI, sends the response, and logs the interaction.
@@ -179,7 +173,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 			"Thanks for using ReelTalkBot. We restrict to 10 messages per 10 minutes to keep costs low and allow everyone to use the tool. Please try again in %d minutes and %d seconds.",
 			minutes, seconds,
 		)
-		if err := a.sendMessage(chatID, limitMsg, messageID); err != nil {
+		if err := a.SendMessage(chatID, limitMsg, messageID); err != nil {
 			log.Printf("Failed to send rate limit message to Telegram: %v", err)
 		}
 
@@ -252,7 +246,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 			messagesJSON, _ := json.Marshal(messages)
 			a.ConversationContexts.Set(conversationKey, string(messagesJSON))
 
-			if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
+			if err := a.SendMessage(chatID, finalMessage, messageID); err != nil {
 				log.Printf("Failed to send OpenAI fallback message to Telegram: %v", err)
 				return err
 			}
@@ -285,7 +279,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 
 			// Send the Knowledge Base response with KB details
 			finalMessage := a.PrepareFinalMessage(knowledgeResponse, kbEntry)
-			if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
+			if err := a.SendMessage(chatID, finalMessage, messageID); err != nil {
 				log.Printf("Failed to send Knowledge Base message to Telegram: %v", err)
 				return err
 			}
@@ -319,7 +313,7 @@ func (a *App) ProcessMessage(chatID int64, userID int, username, userQuestion st
 	messagesJSON, _ := json.Marshal(messages)
 	a.ConversationContexts.Set(conversationKey, string(messagesJSON))
 
-	if err := a.sendMessage(chatID, finalMessage, messageID); err != nil {
+	if err := a.SendMessage(chatID, finalMessage, messageID); err != nil {
 		log.Printf("Failed to send message to Telegram: %v", err)
 		return err
 	}
@@ -335,26 +329,26 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 	command := commandParts[0]
 
 	switch command {
-	case "/learn":
+	case "/learn", "/learn@ReelTalkBot": // Added handling for /learn@ReelTalkBot
 		// Check if the knowledge base feature is active
 		if !a.KnowledgeBaseActive {
 			msg := "Knowledge base training is currently disabled."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Knowledge base is off", nil
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		// Check if the user is authorized
 		if _, ok := a.NoLimitUsers[userID]; !ok {
 			msg := "You are not authorized to train the knowledge base."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Unauthorized training attempt", nil
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		// Extract training data from the message
 		if len(commandParts) < 2 {
-			msg := "Please provide the training data.\nUsage: /learn [Category]: [SubCategory]: [Your Information]\n\nExample: /learn Gear Selection: Fly Fishing: Information about choosing the right fly fishing gear."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Incomplete training command", nil
+			msg := "Please provide the training data.\nUsage: /learn [Category]: [SubCategory]: [Your Information]\n\nExample: /learn Techniques: Fly Fishing: Information about choosing the right fly fishing gear."
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 		trainingData := commandParts[1]
 
@@ -362,12 +356,8 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		category, err := a.parseTrainingData(trainingData)
 		if err != nil {
 			msg := fmt.Sprintf("Invalid training data format: %v\n\nUsage: /learn [Category]: [SubCategory]: [Your Information]\n\nExample: /learn Gear Selection: Fly Fishing: Information about choosing the right fly fishing gear.", err)
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			// Send error message to user if they are in NoLimitUsers
-			if _, isNoLimitUser := a.NoLimitUsers[userID]; isNoLimitUser {
-				a.sendMessage(message.Chat.ID, "Failed to process your training data. Please ensure it follows the correct format.", message.MessageID)
-			}
-			return "Invalid training data", err
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		// Send training data to the knowledge base microservice
@@ -375,44 +365,40 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		if err != nil {
 			log.Printf("Failed to send training data: %v", err)
 			msg := "Failed to train the knowledge base. Please ensure your data is correctly formatted."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			// Send error message to user if they are in NoLimitUsers
-			if _, isNoLimitUser := a.NoLimitUsers[userID]; isNoLimitUser {
-				a.sendMessage(message.Chat.ID, "An error occurred while processing your training data.", message.MessageID)
-			}
-			return "Training failed", err
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		msg := fmt.Sprintf("Training data received and is being processed under category: %s.", category)
-		a.sendMessage(message.Chat.ID, msg, message.MessageID)
-		return "Training command processed", nil
+		a.SendMessage(message.Chat.ID, msg, message.MessageID)
+		return "", nil
 
 	case "/rate":
 		// Handle rating of KB articles
 		if len(commandParts) < 2 {
 			msg := "Please provide the KB number and your rating.\nUsage: /rate [KB Number] [Helpful/Not Helpful]\n\nExample: /rate 123 Helpful"
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Incomplete rating command", nil
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 		ratingData := commandParts[1]
 		parts := strings.SplitN(ratingData, " ", 2)
 		if len(parts) < 2 {
 			msg := "Invalid rating format.\nUsage: /rate [KB Number] [Helpful/Not Helpful]"
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Invalid rating format", nil
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 		kbNumberStr := parts[0]
 		rating := strings.ToLower(strings.TrimSpace(parts[1]))
 		kbNumber, err := strconv.Atoi(kbNumberStr)
 		if err != nil {
 			msg := "KB Number must be a valid integer."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Invalid KB Number", err
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 		if rating != "helpful" && rating != "not helpful" {
 			msg := "Rating must be either 'Helpful' or 'Not Helpful'."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			return "Invalid rating value", fmt.Errorf("invalid rating value")
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		// Update the KB entry with the rating
@@ -420,17 +406,13 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		if err != nil {
 			log.Printf("Failed to update KB entry rating: %v", err)
 			msg := "Failed to update your rating. Please try again later."
-			a.sendMessage(message.Chat.ID, msg, message.MessageID)
-			// Send error message to user if they are in NoLimitUsers
-			if _, isNoLimitUser := a.NoLimitUsers[userID]; isNoLimitUser {
-				a.sendMessage(message.Chat.ID, "An error occurred while processing your rating.", message.MessageID)
-			}
-			return "Rating failed", err
+			a.SendMessage(message.Chat.ID, msg, message.MessageID)
+			return "", nil
 		}
 
 		msg := "Thank you for your feedback!"
-		a.sendMessage(message.Chat.ID, msg, message.MessageID)
-		return "Rating processed", nil
+		a.SendMessage(message.Chat.ID, msg, message.MessageID)
+		return "", nil
 
 	case "/help", "/help@ReelTalkBot": // Added handling for /help@ReelTalkBot
 		// Handle /help command to provide detailed usage instructions and example prompts
@@ -491,26 +473,41 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		keyboardJSON, err := json.Marshal(keyboard)
 		if err != nil {
 			log.Printf("Failed to marshal inline keyboard: %v", err)
-			a.sendMessage(message.Chat.ID, "Failed to create help menu.", message.MessageID)
-			return "Help command failed", err
+			a.SendMessage(message.Chat.ID, "Failed to create help menu.", message.MessageID)
+			return "", nil
 		}
 
 		// Append buttons to the help message
 		helpMessage += "\n\n"
 
 		// Send the help message with inline buttons
-		if err := a.sendMessageWithKeyboard(message.Chat.ID, helpMessage, message.MessageID, string(keyboardJSON)); err != nil {
+		if err := a.SendMessageWithKeyboard(message.Chat.ID, helpMessage, message.MessageID, string(keyboardJSON)); err != nil {
 			log.Printf("Failed to send help message: %v", err)
-			return "Help command failed", err
+			return "", nil
 		}
 
-		return "Help command processed", nil
+		return "", nil
 
 	default:
 		msg := "Unknown command."
-		a.sendMessage(message.Chat.ID, msg, message.MessageID)
-		return "Unknown command", nil
+		a.SendMessage(message.Chat.ID, msg, message.MessageID)
+		return "", nil
 	}
+}
+
+// SendMessage sends a plain text message to a Telegram chat without any keyboard.
+func (a *App) SendMessage(chatID int64, text string, replyToMessageID int) error {
+	return a.sendMessage(chatID, text, replyToMessageID)
+}
+
+// SendMessageWithKeyboard sends a message with an inline keyboard to a Telegram chat.
+func (a *App) SendMessageWithKeyboard(chatID int64, text string, replyToMessageID int, keyboard string) error {
+	return a.sendMessageWithKeyboard(chatID, text, replyToMessageID, keyboard)
+}
+
+// GetBotUsername returns the bot's username.
+func (a *App) GetBotUsername() string {
+	return a.BotUsername
 }
 
 // HandleCallbackQuery handles callback queries from inline keyboard buttons.
@@ -524,7 +521,7 @@ func (a *App) HandleCallbackQuery(callbackQuery *types.TelegramCallbackQuery) er
 	if !exists {
 		log.Printf("Received unknown callback_data: %s", data)
 		// Optionally, send a message indicating the action is not recognized
-		a.sendMessage(chatID, "Sorry, I didn't recognize that action.", messageID)
+		a.SendMessage(chatID, "Sorry, I didn't recognize that action.", messageID)
 		return fmt.Errorf("unknown callback_data: %s", data)
 	}
 
@@ -863,27 +860,30 @@ func (a *App) HandleUpdate(update *types.TelegramUpdate) {
 		return
 	}
 
-	if update.Message == nil {
-		return
-	}
-
-	message := update.Message
-	userID := message.From.ID
-	username := message.From.Username
-
-	// Check if the message is a command
-	if len(message.Entities) > 0 && message.Entities[0].Type == "bot_command" {
-		// Handle command
-		_, err := a.HandleCommand(message, userID, username)
-		if err != nil {
-			log.Printf("Error handling command: %v", err)
-		}
-		return
-	}
-
-	// Handle regular messages
-	err := a.ProcessMessage(message.Chat.ID, userID, username, message.Text, message.MessageID)
+	// Delegate message processing to TelegramHandler
+	response, err := a.TelegramHandler.HandleTelegramMessage(update)
 	if err != nil {
-		log.Printf("Error processing message: %v", err)
+		log.Printf("Error handling Telegram message: %v", err)
 	}
+
+	// Optionally, send a response back if needed
+	if response != "" && update.Message != nil {
+		a.SendMessage(update.Message.Chat.ID, response, update.Message.MessageID)
+	}
+}
+
+// PrepareFinalMessage formats the response message from OpenAI or Knowledge Base for sending to Telegram.
+// Now includes KB number, category, and taxonomy information if available, and appends a quick "Need Help?" link.
+func (a *App) PrepareFinalMessage(responseText string, kbEntry *types.KnowledgeEntryResponse) string {
+	// Append KB number, category, and taxonomy information if available
+	finalMessage := responseText
+	if kbEntry != nil {
+		finalMessage += fmt.Sprintf("\n\n**KB Number:** %d\n**Category:** %s\n**Taxonomy:** %s",
+			kbEntry.KBNumber, kbEntry.Category, kbEntry.SubCategory)
+	}
+
+	// Append quick help link
+	finalMessage += "\n\nNeed Help? Type /help to see how to use this bot effectively."
+
+	return finalMessage // Example return; modify as needed.
 }
