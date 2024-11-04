@@ -119,3 +119,42 @@ type QueryParameters struct {
 	Category    string `json:"category,omitempty"`
 	Query       string `json:"query,omitempty"`
 }
+
+// FacebookUpdate represents the structure of a Facebook Messenger webhook event.
+type FacebookUpdate struct {
+	Object string          `json:"object"`
+	Entry  []FacebookEntry `json:"entry"`
+}
+
+// FacebookEntry represents an entry in the Facebook Messenger webhook event.
+type FacebookEntry struct {
+	ID        string              `json:"id"`
+	Time      int64               `json:"time"`
+	Messaging []FacebookMessaging `json:"messaging"`
+}
+
+// FacebookMessaging represents a messaging event from a user.
+type FacebookMessaging struct {
+	Sender    FacebookUser      `json:"sender"`
+	Recipient FacebookUser      `json:"recipient"`
+	Timestamp int64             `json:"timestamp"`
+	Message   *FacebookMessage  `json:"message,omitempty"`
+	Postback  *FacebookPostback `json:"postback,omitempty"`
+}
+
+// FacebookUser represents a user in Facebook Messenger.
+type FacebookUser struct {
+	ID string `json:"id"`
+}
+
+// FacebookMessage represents a message sent by the user.
+type FacebookMessage struct {
+	Mid  string `json:"mid"`
+	Text string `json:"text"`
+}
+
+// FacebookPostback represents a postback action (e.g., button click).
+type FacebookPostback struct {
+	Title   string `json:"title"`
+	Payload string `json:"payload"`
+}

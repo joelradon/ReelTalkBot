@@ -353,7 +353,7 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		trainingData := commandParts[1]
 
 		// Validate and parse training data
-		category, err := a.parseTrainingData(trainingData)
+		category, subCategory, information, err := a.parseTrainingData(trainingData)
 		if err != nil {
 			msg := fmt.Sprintf("Invalid training data format: %v\n\nUsage: /learn [Category]: [SubCategory]: [Your Information]\n\nExample: /learn Gear Selection: Fly Fishing: Information about choosing the right fly fishing gear.", err)
 			a.SendMessage(message.Chat.ID, msg, message.MessageID)
@@ -361,7 +361,7 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 		}
 
 		// Send training data to the knowledge base microservice
-		err = a.sendTrainingData(trainingData)
+		err = a.sendTrainingData(category, subCategory, information)
 		if err != nil {
 			log.Printf("Failed to send training data: %v", err)
 			msg := "Failed to train the knowledge base. Please ensure your data is correctly formatted."
@@ -369,7 +369,7 @@ func (a *App) HandleCommand(message *types.TelegramMessage, userID int, username
 			return "", nil
 		}
 
-		msg := fmt.Sprintf("Training data received and is being processed under category: %s.", category)
+		msg := fmt.Sprintf("Training data received and is being processed under category: %s, subcategory: %s.", category, subCategory)
 		a.SendMessage(message.Chat.ID, msg, message.MessageID)
 		return "", nil
 
@@ -577,29 +577,29 @@ func (a *App) acknowledgeCallback(callbackID string) {
 	}
 }
 
-// parseTrainingData validates and extracts the category from training data.
-func (a *App) parseTrainingData(data string) (string, error) {
+// parseTrainingData validates and extracts the category, subcategory, and information from training data.
+func (a *App) parseTrainingData(data string) (string, string, string, error) {
 	// Expected format: [Category]: [SubCategory]: [Training Information]
 	// Example: "Gear Selection: Fly Fishing: Information about choosing the right fly fishing gear."
 	parts := strings.SplitN(data, ":", 3)
 	if len(parts) < 3 {
-		return "", fmt.Errorf("training data should be in the format 'Category: SubCategory: Information'")
+		return "", "", "", fmt.Errorf("training data should be in the format 'Category: SubCategory: Information'")
 	}
 	category := strings.TrimSpace(parts[0])
 	subCategory := strings.TrimSpace(parts[1])
 	information := strings.TrimSpace(parts[2])
 
 	if category == "" || subCategory == "" || information == "" {
-		return "", fmt.Errorf("category, subcategory, and information must be provided")
+		return "", "", "", fmt.Errorf("category, subcategory, and information must be provided")
 	}
 
 	// Optionally, further validation can be added here
 
-	return category, nil
+	return category, subCategory, information, nil
 }
 
 // sendTrainingData sends training data to the knowledge base microservice.
-func (a *App) sendTrainingData(data string) error {
+func (a *App) sendTrainingData(category, subCategory, information string) error {
 	// Define the knowledge base microservice endpoint
 	trainingEndpoint := a.KnowledgeBaseURL
 	if trainingEndpoint == "" {
@@ -608,7 +608,13 @@ func (a *App) sendTrainingData(data string) error {
 
 	// Prepare the payload
 	payload := map[string]string{
-		"data": data,
+		"body_of_water":     "General",
+		"fish_species":      "General",
+		"water_type":        "General",
+		"question_template": category + ": " + subCategory,
+		"answer":            information,
+		"category":          category,
+		"sub_category":      subCategory,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -886,4 +892,49 @@ func (a *App) PrepareFinalMessage(responseText string, kbEntry *types.KnowledgeE
 	finalMessage += "\n\nNeed Help? Type /help to see how to use this bot effectively."
 
 	return finalMessage // Example return; modify as needed.
+}
+
+// ProcessFacebookMessage processes a user's message from Facebook Messenger.
+func (a *App) ProcessFacebookMessage(senderID, messageText string) (string, error) {
+	// Since Facebook Messenger does not have a concept of chat IDs like Telegram, we can use senderID
+	userID, err := strconv.Atoi(senderID)
+	if err != nil {
+		log.Printf("Invalid sender ID: %v", err)
+		return "", fmt.Errorf("invalid sender ID")
+	}
+	username := "FacebookUser" // Placeholder, as Facebook does not provide username in messages
+
+	// Reuse the existing ProcessMessage method with chatID set to 0
+	err = a.ProcessMessage(0, userID, username, messageText, 0)
+	if err != nil {
+		return "", err
+	}
+
+	// Since responses are sent directly in ProcessMessage, we can return an empty string
+	return "", nil
+}
+
+// HandleFacebookCommand processes commands from Facebook Messenger users.
+func (a *App) HandleFacebookCommand(senderID, messageText string) (string, error) {
+	userID, err := strconv.Atoi(senderID)
+	if err != nil {
+		log.Printf("Invalid sender ID: %v", err)
+		return "", fmt.Errorf("invalid sender ID")
+	}
+	username := "FacebookUser"
+
+	// Create a dummy TelegramMessage to reuse HandleCommand
+	message := &types.TelegramMessage{
+		Text: messageText,
+		Chat: types.TelegramChat{
+			ID: 0, // Not applicable for Facebook Messenger
+		},
+	}
+
+	response, err := a.HandleCommand(message, userID, username)
+	if err != nil {
+		return "", err
+	}
+
+	return response, nil
 }
